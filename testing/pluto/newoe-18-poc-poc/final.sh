@@ -1,5 +1,7 @@
 # A tunnel should have established
 grep "negotiated connection" /tmp/pluto.log
+# should show authenticated by authby=null
+grep "Authenticated" /tmp/pluto.log
 # check for proper state counting
 hostname | grep east && ipsec status | grep "SAs: total"
 sleep 10

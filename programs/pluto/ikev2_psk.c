@@ -298,9 +298,11 @@ stf_status ikev2_verify_psk_auth(enum keyword_authby authby,
 	    DBG_dump("Calculated PSK auth octets", calc_hash, hash_len));
 
 	if (memeq(sig_pbs->cur, calc_hash, hash_len) ) {
+		loglog(RC_LOG_SERIOUS, "Authenticated using %s",
+			authby == AUTH_NULL ? "authby=null" : "authby=secret");
 		return STF_OK;
 	} else {
-		libreswan_log("AUTH mismatch: Received AUTH != computed AUTH");
+		loglog(RC_LOG_SERIOUS, "AUTH mismatch: Received AUTH != computed AUTH");
 		return STF_FAIL;
 	}
 }

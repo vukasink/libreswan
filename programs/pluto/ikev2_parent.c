@@ -529,7 +529,7 @@ static bool v2_check_auth(enum ikev2_auth_method atype,
 	switch (atype) {
 	case IKEv2_AUTH_RSA:
 	{
-		if (that_authby != AUTH_RSASIG) {
+		if (!LIN(POLICY_RSASIG, st->st_connection->policy) &&  that_authby != AUTH_RSASIG) {
 			libreswan_log("Peer attempted RSA authentication but we want %s",
 				enum_name(&ikev2_asym_auth_name, that_authby));
 			return FALSE;
@@ -550,14 +550,14 @@ static bool v2_check_auth(enum ikev2_auth_method atype,
 
 	case IKEv2_AUTH_PSK:
 	{
-		if (that_authby != AUTH_PSK) {
+		if (!LIN(POLICY_PSK, st->st_connection->policy) &&  that_authby != AUTH_PSK) {
 			libreswan_log("Peer attempted PSK authentication but we want %s",
 				enum_name(&ikev2_asym_auth_name, that_authby));
 			return FALSE;
 		}
 
                stf_status authstat = ikev2_verify_psk_auth(
-                               that_authby, st, idhash_in,
+                               AUTH_PSK, st, idhash_in,
                                pbs);
 
                if (authstat != STF_OK) {
@@ -569,14 +569,14 @@ static bool v2_check_auth(enum ikev2_auth_method atype,
 
 	case IKEv2_AUTH_NULL:
 	{
-		if (that_authby != AUTH_NULL) {
+		if (!LIN(POLICY_AUTH_NULL, st->st_connection->policy) &&  that_authby != AUTH_NULL) {
 			libreswan_log("Peer attempted NULL authentication but we want %s",
 				enum_name(&ikev2_asym_auth_name, that_authby));
 			return FALSE;
 		}
 
 		stf_status authstat = ikev2_verify_psk_auth(
-				that_authby, st, idhash_in,
+				AUTH_NULL, st, idhash_in,
 				pbs);
 
 		if (authstat != STF_OK) {
@@ -589,7 +589,7 @@ static bool v2_check_auth(enum ikev2_auth_method atype,
 
 	case IKEv2_AUTH_DIGSIG:
 	{
-		if (that_authby != AUTH_RSASIG) {
+		if (!LIN(POLICY_RSASIG, st->st_connection->policy) &&  that_authby != AUTH_RSASIG) {
 			libreswan_log("Peer attempted Authentication through Digital Signature but we want %s",
 				enum_name(&ikev2_asym_auth_name, that_authby));
 			return FALSE;
@@ -2715,12 +2715,16 @@ static stf_status ikev2_send_auth(struct connection *c,
 		state_with_serialno(st->st_clonedfrom) : st;
 	enum keyword_authby authby = c->spd.this.authby;
 
-	if (authby == AUTH_UNSET) {
+	if (st->st_peer_wants_null) {
+		/* we allow authby=null and IDr payload told us to use it */
+		authby = AUTH_NULL;
+	} else if (authby == AUTH_UNSET) {
 		/* asymmetric policy unset, pick up from symmetric policy */
-		if (c->policy & POLICY_PSK) {
-			authby = AUTH_PSK;
-		} else if (c->policy & POLICY_RSASIG) {
+		/* in order of preference! */
+		if (c->policy & POLICY_RSASIG) {
 			authby = AUTH_RSASIG;
+		} else if (c->policy & POLICY_PSK) {
+			authby = AUTH_PSK;
 		} else if (c->policy & POLICY_AUTH_NULL) {
 			authby = AUTH_NULL;
 		}
@@ -3145,8 +3149,9 @@ static stf_status ikev2_parent_inR1outI2_tail(struct state *pst, struct msg_dige
 
 	/* it should use parent not child state */
 	bool send_cert = ikev2_send_cert_decision(cst);
-	bool send_idr = pc->spd.that.id.name.len != 0; /* me tarzan, you jane */
 	bool ic =  pc->initial_contact && (pst->st_ike_pred == SOS_NOBODY);
+	bool send_idr = ((pc->spd.that.id.kind != ID_NULL && pc->spd.that.id.name.len != 0) ||
+				pc->spd.that.id.kind == ID_NULL); /* me tarzan, you jane */
 
 	DBG(DBG_CONTROL, DBG_log("IDr payload will %sbe sent", send_idr ? "" : "NOT "));
 
@@ -3163,7 +3168,7 @@ static stf_status ikev2_parent_inR1outI2_tail(struct state *pst, struct msg_dige
 
 		hmac_init(&id_ctx, pst->st_oakley.ta_prf, pst->st_skey_pi_nss);
 		build_id_payload((struct isakmp_ipsec_id *)&r_id, &id_b,
-				 &pc->spd.this);
+				 &pc->spd.this, FALSE);
 		r_id.isai_critical = ISAKMP_PAYLOAD_NONCRITICAL;
 		if (DBGP(IMPAIR_SEND_BOGUS_PAYLOAD_FLAG)) {
 			libreswan_log(
@@ -3241,6 +3246,9 @@ static stf_status ikev2_parent_inR1outI2_tail(struct state *pst, struct msg_dige
 		case ID_KEY_ID:
 			r_id.isai_type = ID_KEY_ID;
 			break;
+		case ID_NULL:
+			r_id.isai_type = ID_NULL;
+			break;
 		default:
 			DBG(DBG_CONTROL, DBG_log("Not sending IDr payload for remote ID type %s",
 				enum_show(&ike_idtype_names, pc->spd.that.id.kind)));
@@ -3250,7 +3258,7 @@ static stf_status ikev2_parent_inR1outI2_tail(struct state *pst, struct msg_dige
 		if (r_id.isai_type != ID_NONE) {
 			build_id_payload((struct isakmp_ipsec_id *)&r_id,
 				 &id_b,
-				 &pc->spd.that);
+				 &pc->spd.that, FALSE);
 			r_id.isai_critical = ISAKMP_PAYLOAD_NONCRITICAL;
 			r_id.isai_np = ic ? ISAKMP_NEXT_v2N : ISAKMP_NEXT_v2AUTH;
 
@@ -4051,7 +4059,7 @@ static stf_status ikev2_parent_inI2outR2_auth_tail(struct state *st,
 			hmac_init(&id_ctx, st->st_oakley.ta_prf, st->st_skey_pr_nss);
 			build_id_payload((struct isakmp_ipsec_id *)&r_id,
 					 &id_b,
-					 &c->spd.this);
+					 &c->spd.this, st->st_peer_wants_null);
 			r_id.isai_critical = ISAKMP_PAYLOAD_NONCRITICAL;
 			r_id.isai_np = send_cert ?
 				ISAKMP_NEXT_v2CERT : ISAKMP_NEXT_v2AUTH;

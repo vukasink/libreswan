@@ -82,6 +82,7 @@
 #include "pluto_x509.h"
 #include "ip_address.h"
 #include "pluto_stats.h"
+#include "chunk.h"
 
 /*
  * Process KE values.
@@ -446,11 +447,17 @@ bool extract_peer_id(enum ike_id_type kind, struct id *peer, const pb_stream *id
 		break;
 
 	case ID_NULL:
+#if 0
 		if (left != 0) {
-			loglog(RC_LOG_SERIOUS,
-				"peer's ID_NULL must be empty but is not");
-			return FALSE;
+			setchunk(peer->name, id_pbs->cur, left);
+			DBG(DBG_PARSING,
+		    		DBG_dump_chunk("unauthenticated NULL ID:", peer->name));
+			freeanychunk(peer->name);
+			peer->name.ptr = NULL;
 		}
+#endif
+		peer->name.ptr = NULL;
+		peer->kind = ID_NULL;
 		break;
 
 	default:

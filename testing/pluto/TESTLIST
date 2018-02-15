@@ -441,6 +441,9 @@ kvmplutotest	dnsoe-04				good
 kvmplutotest	dnsoe-05				good
 kvmplutotest	dnsoe-06				wip
 
+kvmplutotest	mixoe-01-authanon-authanon		good
+kvmplutotest	mixoe-02-anon-authanon			good
+
 kvmplutotest	ikev2-initiate-template-01		good
 
 kvmplutotest	ikev2-asymmetric-01-parsing		good

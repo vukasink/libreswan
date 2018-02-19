@@ -48,13 +48,13 @@ extern state_transition_fn ikev2_parent_inI2outR2;
 extern state_transition_fn ikev2_parent_inR2;
 extern crypto_transition_fn ikev2_child_out_cont;
 extern crypto_transition_fn ikev2_child_inR_tail;
-extern void ikev2_add_ipsec_child(int whack_sock, struct state *isakmp_sa,
-		struct connection *c, lset_t policy, unsigned long try,
-		so_serial_t replacing
+extern void ikev2_initiate_child_sa(int whack_sock, struct ike_sa *ike,
+				    struct connection *c, lset_t policy, unsigned long try,
+				    so_serial_t replacing
 #ifdef HAVE_LABELED_IPSEC
-		, struct xfrm_user_sec_ctx_ike *uctx
+				    , struct xfrm_user_sec_ctx_ike *uctx
 #endif
-		);
+				    );
 
 extern void ikev2_child_outI(struct state *st);
 extern void ikev2_child_send_next(struct state *st);
@@ -171,8 +171,7 @@ extern stf_status ikev2_verify_psk_auth(enum keyword_authby authby,
 					unsigned char *idhash,
 					pb_stream *sig_pbs);
 
-extern void ikev2_derive_child_keys(struct state *st,
-				    enum original_role role);
+extern void ikev2_derive_child_keys(struct child_sa *child);
 
 extern struct traffic_selector ikev2_end_to_ts(const struct end *e);
 
@@ -215,7 +214,6 @@ extern int ikev2_evaluate_connection_protocol_fit(const struct connection *d,
 						  int *best_tsr_i);
 
 extern stf_status ikev2_child_sa_respond(struct msg_digest *md,
-					 enum original_role role,
 					 pb_stream *outpbs,
 					 enum isakmp_xchg_types isa_xchg);
 
@@ -266,11 +264,11 @@ struct state_v2_microcode {
 	enum isakmp_xchg_types recv_type;
 	lset_t flags;
 #ifdef NOT_YET
-	/* or struct ... clear_payloads ; struct ... encrypted_payloads; */
+	/* or struct ... message_payloads ; struct ... encrypted_payloads; */
 	struct {
-		struct ikev2_expected_payloads clear;
+		struct ikev2_expected_payloads message;
 		struct ikev2_expected_payloads encrypted;
-	} expected_payloads;
+	} payloads;
 #else
 	lset_t req_clear_payloads;  /* required unencrypted payloads (allows just one) for received packet */
 	lset_t opt_clear_payloads;  /* optional unencrypted payloads (none or one) for received packet */
@@ -288,8 +286,8 @@ void ikev2_copy_cookie_from_sa(struct state *st,
 struct ikev2_payload_errors ikev2_verify_payloads(const struct payload_summary *summary,
 						  const struct ikev2_expected_payloads *expected);
 
-void ikev2_log_payload_errors(struct ikev2_payload_errors errors,
-			      struct state *st);
+void ikev2_log_payload_errors(struct state *st, struct msg_digest *md,
+			      const struct ikev2_payload_errors *errors);
 
 void ikev2_ike_sa_established(struct ike_sa *ike,
 			      const struct state_v2_microcode *svm,

@@ -600,6 +600,8 @@ kvmplutotest	xauth-pluto-27		good
 # esp=null-*
 kvmplutotest	ikev1-algo-esp-null-01	good
 kvmplutotest	ikev2-algo-esp-null-01	good
+kvmplutotest	ikev2-algo-esp-null-02	good
+
 kvmplutotest	interop-ikev2-strongswan-34-esp-null-responder	good
 
 
@@ -942,7 +944,7 @@ kvmplutotest	ipsec-hostkey-ckaid-02-fips	good
 kvmplutotest	ipsec-hostkey-ckaid-03-nsspw	good
 
 # PPK
-kvmplutotest	ikev2-ppk-dynamic-01				good
+kvmplutotest	ikev2-ppk-dynamic-01				wip
 kvmplutotest	ikev2-ppk-static-01-insist-yes			good
 kvmplutotest	ikev2-ppk-static-02-insist-insist		good
 kvmplutotest	ikev2-ppk-static-03-no-insist-fail		good

@@ -578,11 +578,14 @@ void init_ikev2(void)
  * split an incoming message into payloads
  */
 stf_status ikev2_decode_payloads(struct msg_digest *md,
-				 struct payload_summary *summary,
+				 struct payload_summary *summaryp,
 				 pb_stream *in_pbs,
 				 enum next_payload_types_ikev2 np)
 {
-	stf_status status = STF_OK;
+	struct payload_summary summary = {
+		.parsed = true,
+		.n = v2N_NOTHING_WRONG,
+	};
 
 	/*
 	 * ??? zero out the digest descriptors -- might nuke
@@ -598,7 +601,7 @@ stf_status ikev2_decode_payloads(struct msg_digest *md,
 			loglog(RC_LOG_SERIOUS,
 			       "more than %zu payloads in message; ignored",
 			       elemsof(md->digest));
-			status = STF_FAIL + v2N_INVALID_SYNTAX;
+			summary.n = v2N_INVALID_SYNTAX;
 			break;
 		}
 		struct payload_digest *const pd = md->digest + md->digest_roof;
@@ -616,7 +619,7 @@ stf_status ikev2_decode_payloads(struct msg_digest *md,
 			 */
 			if (!in_struct(&pd->payload, &ikev2_generic_desc, in_pbs, &pd->pbs)) {
 				loglog(RC_LOG_SERIOUS, "malformed payload in packet");
-				status = STF_FAIL + v2N_INVALID_SYNTAX;
+				summary.n = v2N_INVALID_SYNTAX;
 				break;
 			}
 			if (pd->payload.v2gen.isag_critical & ISAKMP_PAYLOAD_CRITICAL) {
@@ -630,7 +633,7 @@ stf_status ikev2_decode_payloads(struct msg_digest *md,
 				loglog(RC_LOG_SERIOUS,
 				       "critical payload (%s) was not understood. Message dropped.",
 				       enum_show(&ikev2_payload_names, np));
-				status = STF_FAIL + v2N_UNSUPPORTED_CRITICAL_PAYLOAD;
+				summary.n = v2N_UNSUPPORTED_CRITICAL_PAYLOAD;
 				break;
 			}
 			loglog(RC_COMMENT,
@@ -642,15 +645,15 @@ stf_status ikev2_decode_payloads(struct msg_digest *md,
 
 		if (np >= LELEM_ROOF) {
 			DBG(DBG_CONTROL, DBG_log("huge next-payload %u", np));
-			status = STF_FAIL + v2N_INVALID_SYNTAX;
+			summary.n = v2N_INVALID_SYNTAX;
 			break;
 		}
-		summary->repeated |= (summary->present & LELEM(np));
-		summary->present |= LELEM(np);
+		summary.repeated |= (summary.present & LELEM(np));
+		summary.present |= LELEM(np);
 
 		if (!in_struct(&pd->payload, sd, in_pbs, &pd->pbs)) {
 			loglog(RC_LOG_SERIOUS, "malformed payload in packet");
-			status = STF_FAIL + v2N_INVALID_SYNTAX;
+			summary.n = v2N_INVALID_SYNTAX;
 			break;
 		}
 
@@ -702,7 +705,9 @@ stf_status ikev2_decode_payloads(struct msg_digest *md,
 		md->digest_roof++;
 	}
 
-	return status;
+	*summaryp = summary;
+	return summary.n == v2N_NOTHING_WRONG ? STF_OK : STF_FAIL + summary.n;
+
 }
 
 struct ikev2_payload_errors ikev2_verify_payloads(const struct payload_summary *summary,
@@ -735,7 +740,8 @@ struct ikev2_payload_errors ikev2_verify_payloads(const struct payload_summary *
 }
 
 /* report problems - but less so when OE */
-void ikev2_log_payload_errors(struct ikev2_payload_errors errors, struct state *st)
+void ikev2_log_payload_errors(struct state *st, struct msg_digest *md,
+			      const struct ikev2_payload_errors *errors)
 {
 	if (!DBGP(DBG_OPPO)) {
 		/*
@@ -753,21 +759,31 @@ void ikev2_log_payload_errors(struct ikev2_payload_errors errors, struct state *
 	}
 
 	LSWLOG_LOG_WHACK(RC_LOG_SERIOUS, buf) {
-		lswlogs(buf, "Dropping message with payload errors.");
-		if (errors.missing != LEMPTY) {
-			lswlogf(buf, " missing: ");
+		lswlogs(buf, "Dropping message with payload errors");
+		if (md->message_payloads.parsed) {
+			lswlogf(buf, "; message payloads: ");
 			lswlog_enum_lset_short(buf, &ikev2_payload_names, ",",
-					       errors.missing);
+					       md->message_payloads.present);
 		}
-		if (errors.unexpected != LEMPTY) {
-			lswlogf(buf, " unexpected: ");
+		if (md->encrypted_payloads.parsed) {
+			lswlogf(buf, "; encrypted payloads: ");
 			lswlog_enum_lset_short(buf, &ikev2_payload_names, ",",
-					       errors.unexpected);
+					       md->encrypted_payloads.present);
 		}
-		if (errors.excessive != LEMPTY) {
-			lswlogf(buf, " excessive: ");
+		if (errors->missing != LEMPTY) {
+			lswlogf(buf, "; missing payloads: ");
 			lswlog_enum_lset_short(buf, &ikev2_payload_names, ",",
-					       errors.excessive);
+					       errors->missing);
+		}
+		if (errors->unexpected != LEMPTY) {
+			lswlogf(buf, "; unexpected payloads: ");
+			lswlog_enum_lset_short(buf, &ikev2_payload_names, ",",
+					       errors->unexpected);
+		}
+		if (errors->excessive != LEMPTY) {
+			lswlogf(buf, "; excessive payloads: ");
+			lswlog_enum_lset_short(buf, &ikev2_payload_names, ",",
+					       errors->excessive);
 		}
 	}
 }
@@ -907,12 +923,14 @@ static struct state *process_v2_child_ix(struct msg_digest *md,
 		/* this a new IKE request and not a response */
 		if (md->from_state == STATE_V2_CREATE_R) {
 			what = "Child SA Request";
-			st = duplicate_state(pst, IPSEC_SA);
+			st = ikev2_duplicate_state(pexpect_ike_sa(pst), IPSEC_SA,
+						   SA_RESPONDER);
 			change_state(st, STATE_V2_CREATE_R);
 			insert_state(st); /* needed for delete - we are duplicating early */
 		} else {
 			what = "IKE Rekey Request";
-			st = duplicate_state(pst, IKE_SA);
+			st = ikev2_duplicate_state(pexpect_ike_sa(pst), IKE_SA,
+						   SA_RESPONDER);
 			change_state(st, STATE_V2_REKEY_IKE_R); /* start with this */
 			/* can not call insert_state yet. no IKE cookies yet */
 		}
@@ -1029,17 +1047,23 @@ void process_v2_packet(struct msg_digest **mdp)
 
 	md->msgid_received = ntohl(md->hdr.isa_msgid);
 	const enum isakmp_xchg_types ix = md->hdr.isa_xchg;
-	const bool msg_r = is_msg_response(md);
+	md->message_role = (md->hdr.isa_flags & ISAKMP_FLAGS_v2_MSG_R) ? MESSAGE_RESPONSE : MESSAGE_REQUEST;
 	const bool sent_by_ike_initiator = (md->hdr.isa_flags & ISAKMP_FLAGS_v2_IKE_I) != 0;
 
 	DBG(DBG_CONTROL, {
-		if (msg_r)
-			DBG_log("I am receiving an IKEv2 Response %s",
+			switch (md->message_role) {
+			case MESSAGE_RESPONSE:
+				DBG_log("I am receiving an IKEv2 Response %s",
 					enum_name(&ikev2_exchange_names, ix));
-		else
-			DBG_log("I am receiving an IKEv2 Request %s",
+				break;
+			case MESSAGE_REQUEST:
+				DBG_log("I am receiving an IKEv2 Request %s",
 					enum_name(&ikev2_exchange_names, ix));
-	});
+				break;
+			default:
+				bad_case(md->message_role);
+			}
+		});
 
 	if (sent_by_ike_initiator) {
 		DBG(DBG_CONTROL, DBG_log("I am the IKE SA Original Responder"));
@@ -1070,8 +1094,12 @@ void process_v2_packet(struct msg_digest **mdp)
 		 * The initiator must send: IKE_I && !MSG_R
 		 * The responder must send: !IKE_I && MSG_R.
 		 */
-		if (sent_by_ike_initiator == msg_r) {
-			libreswan_log("dropping IKE_SA_INIT packet with conflicting initiator and responder flags");
+		if (sent_by_ike_initiator && md->message_role != MESSAGE_REQUEST) {
+			libreswan_log("dropping IKE_SA_INIT request with conflicting message response flag");
+			return;
+		}
+		if (!sent_by_ike_initiator && md->message_role != MESSAGE_RESPONSE) {
+			libreswan_log("dropping IKE_SA_INIT response with conflicting message response flag");
 			return;
 		}
 		/*
@@ -1159,7 +1187,7 @@ void process_v2_packet(struct msg_digest **mdp)
 			 */
 			rehash_state(st, NULL, md->hdr.isa_rcookie);
 		}
-	} else if (!msg_r) {
+	} else if (md->message_role == MESSAGE_REQUEST) {
 		/*
 		 * A request; send it to the parent.
 		 */
@@ -1193,7 +1221,7 @@ void process_v2_packet(struct msg_digest **mdp)
 			return;
 		}
 		/* update lastrecv later on */
-	} else {
+	} else if (md->message_role == MESSAGE_RESPONSE) {
 		/*
 		 * A response; find the child that made the request
 		 * and send it to that.
@@ -1248,6 +1276,8 @@ void process_v2_packet(struct msg_digest **mdp)
 				}
 			}
 		}
+	} else {
+		PASSERT_FAIL("message role %d invalid", md->message_role);
 	}
 
 	/* ISAKMP_v2_INFORMATIONAL & CREATE_CHILD_SA roles could flip */
@@ -1285,8 +1315,8 @@ void process_v2_packet(struct msg_digest **mdp)
 
 	passert((st == NULL) == (from_state == STATE_UNDEFINED));
 
-	stf_status clear_payload_result = STF_ROOF;
-	struct ikev2_payload_errors clear_payload_status = { .bad = false };
+	stf_status message_payload_result = STF_ROOF;
+	struct ikev2_payload_errors message_payload_status = { .bad = false };
 	stf_status encrypted_payload_result = STF_ROOF;
 	struct ikev2_payload_errors encrypted_payload_status = { .bad = false };
 
@@ -1308,23 +1338,25 @@ void process_v2_packet(struct msg_digest **mdp)
 		/*
 		 * Does the message reply flag match?
 		 */
-		if (match_hdr_flag(svm->flags, SMF2_MSG_R_SET, !msg_r))
+		if (match_hdr_flag(svm->flags, SMF2_MSG_R_SET,
+				   md->message_role == MESSAGE_REQUEST))
 			continue;
-		if (match_hdr_flag(svm->flags, SMF2_MSG_R_CLEAR, msg_r))
+		if (match_hdr_flag(svm->flags, SMF2_MSG_R_CLEAR,
+				   md->message_role == MESSAGE_RESPONSE))
 			continue;
 		/*
 		 * Since there's a state that, at least, looks like it
 		 * will accept the packet, unpack the clear payload
 		 * and continue matching.
 		 */
-		if (clear_payload_result == STF_ROOF) {
+		if (message_payload_result == STF_ROOF) {
 			DBG(DBG_CONTROL, DBG_log("Unpacking clear payload for svm: %s", svm->story));
-			clear_payload_result = ikev2_decode_payloads(md,
-								     &md->cleartext_payloads,
+			message_payload_result = ikev2_decode_payloads(md,
+								     &md->message_payloads,
 								     &md->message_pbs,
 								     md->hdr.isa_np);
-			if (clear_payload_result != STF_OK) {
-				complete_v2_state_transition(mdp, clear_payload_result);
+			if (message_payload_result != STF_OK) {
+				complete_v2_state_transition(mdp, message_payload_result);
 				return;
 			}
 		}
@@ -1338,16 +1370,16 @@ void process_v2_packet(struct msg_digest **mdp)
 		 * XXX: hack until expected_clear_payloads is added to
 		 * struct state_v2_microcode or replacement.
 		 */
-		struct ikev2_expected_payloads expected_cleartext_payloads = {
+		struct ikev2_expected_payloads expected_message_payloads = {
 			.required = svm->req_clear_payloads,
 			.optional = svm->opt_clear_payloads,
 		};
-		struct ikev2_payload_errors clear_payload_errors
-			= ikev2_verify_payloads(&md->cleartext_payloads,
-						&expected_cleartext_payloads);
-		if (clear_payload_errors.bad) {
+		struct ikev2_payload_errors message_payload_errors
+			= ikev2_verify_payloads(&md->message_payloads,
+						&expected_message_payloads);
+		if (message_payload_errors.bad) {
 			/* Save this failure for later logging. */
-			clear_payload_status = clear_payload_errors;
+			message_payload_status = message_payload_errors;
 			continue;
 		}
 
@@ -1357,7 +1389,7 @@ void process_v2_packet(struct msg_digest **mdp)
 		 *
 		 * (.seen&(P(SK)|P(SKF))!=0 is equivalent.
 		 */
-		if (!(expected_cleartext_payloads.required & P(SK))) {
+		if (!(expected_message_payloads.required & P(SK))) {
 			break;
 		}
 
@@ -1382,7 +1414,7 @@ void process_v2_packet(struct msg_digest **mdp)
 			 * isn't always possible since the fragment
 			 * may be the trigger for DH.
 			 */
-			if ((md->cleartext_payloads.present & P(SKF))
+			if ((md->message_payloads.present & P(SKF))
 			    && !ikev2_collect_fragment(md, st)) {
 				return;
 			}
@@ -1458,10 +1490,10 @@ void process_v2_packet(struct msg_digest **mdp)
 	if (svm->state == STATE_IKEv2_ROOF) {
 		DBG(DBG_CONTROL, DBG_log("no useful state microcode entry found"));
 		/* no useful state microcode entry */
-		if (clear_payload_status.bad) {
+		if (message_payload_status.bad) {
 			struct payload_digest *ntfy;
 
-			ikev2_log_payload_errors(clear_payload_status, st);
+			ikev2_log_payload_errors(st, md, &message_payload_status);
 
 			/* we want to print and log the first notify payload */
 			ntfy = md->chain[ISAKMP_NEXT_v2N];
@@ -1472,7 +1504,7 @@ void process_v2_packet(struct msg_digest **mdp)
 			}
 			complete_v2_state_transition(mdp, STF_FAIL + v2N_INVALID_SYNTAX);
 		} else if (encrypted_payload_status.bad) {
-			ikev2_log_payload_errors(encrypted_payload_status, st);
+			ikev2_log_payload_errors(st, md, &encrypted_payload_status);
 			complete_v2_state_transition(mdp, STF_FAIL + v2N_INVALID_SYNTAX);
 		} else if (!(md->hdr.isa_flags & ISAKMP_FLAGS_v2_MSG_R)) {
 			/*

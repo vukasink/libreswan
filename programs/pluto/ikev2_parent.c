@@ -2548,25 +2548,25 @@ stf_status ikev2_decrypt_msg(struct state *st, struct msg_digest *md)
 							     e_pbs->cur - md->packet_pbs.start);
 	}
 
-	if (status != STF_OK) {
-		return status;
-	}
-
-	/* CLANG 3.5 mis-diagnoses that chunk is undefined */
-	init_pbs(&md->clr_pbs, chunk.ptr, chunk.len, "cleartext");
-
 	DBG(DBG_CONTROLMORE, DBG_log("#%lu ikev2 %s decrypt %s",
 				     st->st_serialno,
 				     enum_name(&ikev2_exchange_names,
 					       md->hdr.isa_xchg),
 				     status == STF_OK ? "success" : "failed"));
 
+	if (status != STF_OK) {
+		return status;
+	}
+
+	/* CLANG 3.5 mis-diagnoses that chunk is undefined */
+	md->encrypted_pbs = chunk_as_pbs(chunk, "cleartext");
+
 	 enum next_payload_types_ikev2 np = md->chain[ISAKMP_NEXT_v2SK] ?
 		md->chain[ISAKMP_NEXT_v2SK]->payload.generic.isag_np :
 		md->chain[ISAKMP_NEXT_v2SKF]->payload.v2skf.isaskf_np;
 
 	 return ikev2_decode_payloads(md, &md->encrypted_payloads,
-				      &md->clr_pbs, np);
+				      &md->encrypted_pbs, np);
 }
 
 /* Misleading name, also used for NULL sized type's */
@@ -3056,7 +3056,8 @@ static stf_status ikev2_parent_inR1outI2_tail(struct state *pst, struct msg_dige
 	ikev2_log_parentSA(pst);
 
 	/* XXX This is too early and many failures could lead to not needing a child state */
-	struct state *cst = duplicate_state(pst, IPSEC_SA);	/* child state */
+	struct state *cst = ikev2_duplicate_state(pexpect_ike_sa(pst), IPSEC_SA,
+						  SA_INITIATOR);	/* child state */
 
 	/* XXX because the early child state ends up with the try counter check, we need to copy it */
 	cst->st_try = pst->st_try;
@@ -4133,9 +4134,8 @@ static stf_status ikev2_parent_inI2outR2_auth_tail(struct state *st,
 
 		if (np == ISAKMP_NEXT_v2SA || np == ISAKMP_NEXT_v2CP) {
 			/* must have enough to build an CHILD_SA */
-			stf_status ret = ikev2_child_sa_respond(md, ORIGINAL_RESPONDER,
-						     &e_pbs_cipher,
-						     ISAKMP_v2_AUTH);
+			stf_status ret = ikev2_child_sa_respond(md, &e_pbs_cipher,
+								ISAKMP_v2_AUTH);
 
 			/* note: st: parent; md->st: child */
 
@@ -4528,7 +4528,7 @@ static stf_status ikev2_process_ts_and_rest(struct msg_digest *md)
 		} /* for */
 	} /* notification block */
 
-	ikev2_derive_child_keys(st, md->original_role);
+	ikev2_derive_child_keys(pexpect_child_sa(st));
 
 	/* now install child SAs */
 	if (!install_ipsec_sa(st, TRUE))
@@ -5326,8 +5326,8 @@ static stf_status ikev2_child_out_tail(struct msg_digest *md)
 				ISAKMP_v2_CREATE_CHILD_SA);
 	} else  {
 		RETURN_STF_FAILURE_STATUS(ikev2_rekey_child_copy_ts(md));
-		ret = ikev2_child_sa_respond(md, ORIGINAL_RESPONDER,
-				&e_pbs_cipher, ISAKMP_v2_CREATE_CHILD_SA);
+		ret = ikev2_child_sa_respond(md, &e_pbs_cipher,
+					     ISAKMP_v2_CREATE_CHILD_SA);
 	}
 
 	/* note: pst: parent; md->st: child */
@@ -6450,24 +6450,25 @@ bool ikev2_delete_out(struct state *st)
 	return res;
 }
 
-void ikev2_add_ipsec_child(int whack_sock, struct state *isakmp_sa,
-                       struct connection *c, lset_t policy,
-                       unsigned long try, so_serial_t replacing
+void ikev2_initiate_child_sa(int whack_sock, struct ike_sa *ike,
+			     struct connection *c, lset_t policy,
+			     unsigned long try, so_serial_t replacing
 #ifdef HAVE_LABELED_IPSEC
-                       , struct xfrm_user_sec_ctx_ike *uctx
+			     , struct xfrm_user_sec_ctx_ike *uctx
 #endif
-                       )
+			     )
 {
 	struct state *st;
 	char replacestr[32];
-	if (find_pending_phase2(isakmp_sa->st_serialno,
+	if (find_pending_phase2(ike->sa.st_serialno,
 				c, IPSECSA_PENDING_STATES)) {
 		return;
 	}
 
 	passert(c != NULL);
 
-	st = duplicate_state(isakmp_sa, IPSEC_SA);
+	st = ikev2_duplicate_state(ike, IPSEC_SA,
+				   SA_INITIATOR);
 	st->st_whack_sock = whack_sock;
 	st->st_connection = c;	/* safe: from duplicate_state */
 	passert(c != NULL);
@@ -6511,7 +6512,7 @@ void ikev2_add_ipsec_child(int whack_sock, struct state *isakmp_sa,
 			st->st_serialno,
 			prettypolicy(policy),
 			replacestr,
-			isakmp_sa->st_serialno,
+			ike->sa.st_serialno,
 			pfsgroupname);
 	});
 	delete_event(st);
@@ -6747,7 +6748,25 @@ bool ikev2_close_encrypted_payload(struct v2sk_stream *sk)
 {
 	/* padding + pad-length */
 
-	if (!ikev2_padup_pre_encrypt(&sk->ike->sa, &sk->payload)) {
+	size_t padding;
+	if (sk->ike->sa.st_oakley.ta_encrypt->pad_to_blocksize) {
+		const size_t blocksize = sk->ike->sa.st_oakley.ta_encrypt->enc_blocksize;
+		padding = pad_up(sk->payload.cur - sk->cleartext, blocksize);
+		if (padding == 0) {
+			padding = blocksize;
+		}
+	} else {
+		padding = 1;
+	}
+	DBG(DBG_EMITTING,
+	    DBG_log("adding %zd bytes of padding (including 1 byte padding-length)",
+		    padding));
+	char b[MAX_CBC_BLOCK_SIZE];
+	passert(sizeof(b) >= padding);
+	for (unsigned i = 0; i < padding; i++) {
+		b[i] = i;
+	}
+	if (!out_raw(b, padding, &sk->payload, "padding and length")) {
 		libreswan_log("error initializing padding for encrypted %s payload",
 			      sk->name);
 		return false;

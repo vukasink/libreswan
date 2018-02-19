@@ -903,8 +903,17 @@ stf_status ikev2_resp_accept_child_ts(
 	if (isa_xchg == ISAKMP_v2_CREATE_CHILD_SA) {
 		update_state_connection(cst, b);
 	} else {
-		/* ??? is this only for AUTH exchange? */
-		cst = duplicate_state(cst, IPSEC_SA);
+		/*
+		 * ??? is this only for AUTH exchange?
+		 *
+		 * XXX: comments above clearly suggest CST is the
+		 * child, yet this code only works if CST is actually
+		 * a parent!!!
+		 */
+		cst = ikev2_duplicate_state(pexpect_ike_sa(cst), IPSEC_SA,
+					    md->message_role == MESSAGE_REQUEST ? SA_RESPONDER :
+					    md->message_role == MESSAGE_RESPONSE ? SA_INITIATOR :
+					    0);
 		cst->st_connection = b;	/* safe: from duplicate_state */
 		insert_state(cst); /* needed for delete - we should never have duplicated before we were sure */
 	}
@@ -942,7 +951,10 @@ static stf_status ikev2_cp_reply_state(const struct msg_digest *md,
 		cst = md->st;
 		update_state_connection(cst, c);
 	} else {
-		cst = duplicate_state(md->st, IPSEC_SA);
+		cst = ikev2_duplicate_state(pexpect_ike_sa(md->st), IPSEC_SA,
+					    md->message_role == MESSAGE_REQUEST ? SA_RESPONDER :
+					    md->message_role == MESSAGE_RESPONSE ? SA_INITIATOR :
+					    0);
 		cst->st_connection = c;	/* safe: from duplicate_state */
 		insert_state(cst); /* needed for delete - we should never have duplicated before we were sure */
 	}
@@ -961,10 +973,47 @@ static stf_status ikev2_cp_reply_state(const struct msg_digest *md,
 }
 
 stf_status ikev2_child_sa_respond(struct msg_digest *md,
-				  enum original_role role,
 				  pb_stream *outpbs,
 				  enum isakmp_xchg_types isa_xchg)
 {
+	/*
+	 * XXX: This function was only called with ORIGINAL_ROLE set
+	 * to ORIGINAL_RESPONDER so it was hardwired.  Looking at the
+	 * calls:
+	 *
+	 * - in the original responder's AUTH code so
+         *   ORIGINAL_RESPONDER is correct
+	 *
+	 * - CHILD_SA reply code (?), since either end can send such a
+         *   request, the end's original role may not be
+         *   ORIGINAL_RESPONDER.
+	 *
+	 * Looking at the code:
+	 *
+	 * - it isn't clear if the notification parsing checks need to
+	 *   be conditional on ORIGINAL_ROLE or message responder?
+	 *
+	 *   Does it need the IKE SA ROLE, or the CHILD SA ROLE?
+	 *
+	 * - The function ikev2_derive_child_keys() needs to know the
+	 *   initiator and responder when assigning keying material.
+	 *
+	 *   But who is the initiator and who is the responder?
+	 *
+	 *   Section 1.3.1 (Creating new Child SAs...) refers to the
+	 *   end sending the CHILD_SA request as the initiator (i.e.,
+	 *   as determined by the message_role), but Section 2.17
+	 *   (Generating Keying Material for Child SAs) could be read
+	 *   as refering to the original roles (I suspect it isn't).
+	 *
+	 *   So either ike_sa(cst) .sa .st_original_role or md
+	 *   .message_role should be used here?
+	 *
+	 *   Either way, something is wrong as this call hard-wires
+	 *   the responder but the second call is using ORIGINAL_ROLE!
+	 */
+	const enum original_role role = ORIGINAL_RESPONDER;
+
 	struct state *cst;	/* child state */
 	struct state *pst;
 	struct connection *c = md->st->st_connection;
@@ -1189,7 +1238,7 @@ stf_status ikev2_child_sa_respond(struct msg_digest *md,
 		}
 	}
 
-	ikev2_derive_child_keys(cst, role);
+	ikev2_derive_child_keys(pexpect_child_sa(cst));
 
 	/* Check to see if we need to release an old instance */
        ISAKMP_SA_established(pst->st_connection, pst->st_serialno);

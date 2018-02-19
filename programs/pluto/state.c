@@ -534,6 +534,21 @@ struct ike_sa *pexpect_ike_sa(struct state *st)
 	return get_ike_sa(st, true);
 }
 
+struct child_sa *pexpect_child_sa(struct state *st)
+{
+	if (st == NULL) {
+		return NULL;
+	} else if (IS_CHILD_SA(st)) {
+		return (struct child_sa*) st;
+	} else {
+		PEXPECT_LOG("expecting child SA but state #%lu is a parent",
+				    st->st_serialno);
+		return (struct child_sa*) st;
+	}
+}
+
+union sas { struct child_sa child; struct ike_sa ike; struct state st; };
+
 /*
  * Get a state object.
  * Caller must schedule an event for this object so that it doesn't leak.
@@ -543,8 +558,10 @@ struct state *new_state(void)
 {
 	static so_serial_t next_so = SOS_FIRST;
 
-	struct ike_sa *ike = alloc_thing(struct ike_sa, "struct state in new_state()");
-	struct state *st = &ike->sa;
+	union sas *sas = alloc_thing(union sas, "struct state in new_state()");
+	passert(&sas->st == &sas->child.sa);
+	passert(&sas->st == &sas->ike.sa);
+	struct state *st = &sas->st;
 	*st = (struct state) {
 		.st_whack_sock = NULL_FD,	/* note: not 0 */
 		.st_finite_state = &state_undefined,
@@ -1423,13 +1440,14 @@ void delete_states_by_peer(const ip_address *peer)
 
 /*
  * IKEv1: Duplicate a Phase 1 state object, to create a Phase 2 object.
- * IKEv2: Duplicate a Parent SA state object, to create an
- * IPSEC or an IKE SA object
+ *
+ * IKEv2: Duplicate an IKE SA state object, to create either a CHILD
+ * SA or IKE SA (rekeying parent) object.
  *
  * Caller must schedule an event for this object so that it doesn't leak.
  * Caller must insert_state().
  */
-struct state *duplicate_state(struct state *st, sa_t sa_type)
+static struct state *duplicate_state(struct state *st, sa_t sa_type)
 {
 	struct state *nst;
 	char cib[CONN_INST_BUF];
@@ -1529,6 +1547,19 @@ struct state *duplicate_state(struct state *st, sa_t sa_type)
 	nst->st_seen_cfg_banner = clone_str(st->st_seen_cfg_banner, "child st_seen_cfg_banner");
 
 	return nst;
+}
+
+struct state *ikev1_duplicate_state(struct state *st, sa_t sa_type)
+{
+	return duplicate_state(st, sa_type);
+}
+
+struct state *ikev2_duplicate_state(struct ike_sa *ike,
+				    sa_t sa_type, enum sa_role role)
+{
+	struct state *cst = duplicate_state(&ike->sa, sa_type);
+	cst->st_sa_role = role;
+	return cst;
 }
 
 void for_each_state(void (*f)(struct state *, void *data), void *data)
@@ -2625,6 +2656,10 @@ bool update_mobike_endpoints(struct state *pst,
 		cst->st_localport = pst->st_localport = md->iface->port;
 		cst->st_interface = pst->st_interface = md->iface;
 	}
+
+	/* reset liveness */
+	pst->st_pend_liveness = FALSE;
+	pst->st_last_liveness = monotime_epoch;
 
 	delete_oriented_hp(c); /* hp list may have changed */
 	if (!orient(c)) {

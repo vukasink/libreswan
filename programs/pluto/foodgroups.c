@@ -199,6 +199,7 @@ static void read_foodgroup(struct fg_groups *g)
 					}
 				}
 				(void)shift(); /* next */
+				flushline("trailing characters after policy entry");
 				continue;
 			}
 

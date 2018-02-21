@@ -1938,10 +1938,12 @@ void add_connection(const struct whack_message *wm)
  * Returns name of new connection.  NULL on failure (duplicated name).
  * Caller is responsible for pfreeing name.
  */
-char *add_group_instance(struct connection *group, const ip_subnet *target)
+char *add_group_instance(struct connection *group, const ip_subnet *target,
+			 u_int8_t proto , u_int16_t startport , u_int16_t endport)
 {
 	passert(group->kind == CK_GROUP);
 	passert(oriented(*group));
+	passert(startport <= endport);
 
 	/*
 	 * Manufacture a unique name for this template.
@@ -1954,7 +1956,12 @@ char *add_group_instance(struct connection *group, const ip_subnet *target)
 		char targetbuf[SUBNETTOT_BUF];
 
 		subnettot(target, 0, targetbuf, sizeof(targetbuf));
-		snprintf(namebuf, sizeof(namebuf), "%s#%s", group->name, targetbuf);
+		if (proto == 0) {
+			snprintf(namebuf, sizeof(namebuf), "%s#%s", group->name, targetbuf);
+		} else {
+			snprintf(namebuf, sizeof(namebuf), "%s#%s_%d/%d-%d", group->name,
+				targetbuf, proto, startport, endport);
+		}
 	}
 
 	if (conn_by_name(namebuf, FALSE, FALSE) != NULL) {
@@ -1980,6 +1987,9 @@ char *add_group_instance(struct connection *group, const ip_subnet *target)
 		unshare_connection(t);
 
 		t->spd.that.client = *target;
+		t->spd.this.protocol = proto; /* from any source port */
+		t->spd.that.protocol = proto;
+		t->spd.that.port = startport; /* TODO port range */
 		t->policy &= ~(POLICY_GROUP | POLICY_GROUTED);
 		t->policy |= POLICY_GROUPINSTANCE; /* mark as group instance for later */
 		t->kind = isanyaddr(&t->spd.that.host_addr) &&

@@ -795,8 +795,13 @@ static void initiate_ondemand_body(struct find_oppo_bundle *b
 				happy(addrtosubnet(&b->our_client, &this_client));
 				happy(addrtosubnet(&b->peer_client, &that_client));
 				/* negotiationshunt must be wider than bare shunt, esp on NETKEY */
-				setportof(0, &this_client.addr);
-				setportof(0, &that_client.addr);
+				setportof(0, &this_client.addr); /* always catch all ephemeral to dest */
+				if (b->transport_proto != 0 || portof(&b->peer_client) != 0) {
+					DBG(DBG_OPPO, DBG_log("shunt widened for IP to IP oppo"));
+					setportof(0, &that_client.addr);
+				} else {
+					DBG(DBG_OPPO, DBG_log("shunt not widened for oppo dest with protoport"));
+				}
 
 				DBG(DBG_OPPO,
 					DBG_log("going to initiate opportunistic, first installing %s negotiationshunt",

@@ -38,6 +38,8 @@
 #include "log.h"
 #include "whack.h"
 
+#include <errno.h>
+
 /* Food group config files are found in directory fg_path */
 
 static char *fg_path = NULL;
@@ -67,6 +69,9 @@ struct fg_targets {
 	struct fg_targets *next;
 	struct fg_groups *group;
 	ip_subnet subnet;
+	u_int8_t proto;
+	u_int16_t startport;
+	u_int16_t endport;
 	char *name; /* name of instance of group conn */
 };
 
@@ -102,6 +107,17 @@ static void read_foodgroup(struct fg_groups *g)
 	size_t plen = strlen(oco->policies_dir) + 2 + strlen(fgn) + 1;
 	struct file_lex_position flp_space;
 
+	/* food group should not specify leftprotoport/rightprotoport */
+	if (g->connection->spd.this.protocol != 0 || g->connection->spd.this.port != 0 ||
+		g->connection->spd.that.protocol != 0 || g->connection->spd.that.port != 0) {
+		loglog(RC_LOG_SERIOUS, "Opportunistic template connection \"%s\" must not specify protoport. Instead configure protocol and ports in the policies/ files",
+			g->connection->name);
+		g->connection->spd.this.protocol = 0;
+		g->connection->spd.this.port = 0;
+		g->connection->spd.that.protocol = 0;
+		g->connection->spd.that.port = 0;
+	}
+
 	if (plen > fg_path_space) {
 		pfreeany(fg_path);
 		fg_path_space = plen + 10;
@@ -126,6 +142,9 @@ static void read_foodgroup(struct fg_groups *g)
 					strchr(flp->tok, ':') == NULL ?
 					&af_inet4_info : &af_inet6_info;
 				ip_subnet sn;
+				u_int8_t proto = 0;
+				u_int16_t startport = 0, endport = 0;
+				bool has_port_wildcard;
 				err_t ugh;
 
 				if (strchr(flp->tok, '/') == NULL) {
@@ -151,7 +170,34 @@ static void read_foodgroup(struct fg_groups *g)
 					       "\"%s\" line %d: unsupported Address Family \"%s\"",
 					       flp->filename, flp->lino,
 					       flp->tok);
+						(void)shift();
+						flushline(NULL);
 				} else {
+					/* check for protocol and ports */
+					libreswan_log("PAUL: checking proto ports on line %d", flp->lino);
+					(void)shift();
+					if (flp->bdry == B_none) {
+						libreswan_log("PAUL: flp->bdry == B_none");
+						//struct protoent *protoe;
+						libreswan_log("PAUL: protocol is %s", flp->tok);
+
+						ugh = ttoprotoport(flp->tok, 0, &proto, &startport, &has_port_wildcard);
+						if (ugh == NULL) {
+							libreswan_log("PAUL: converted to proto %d, port %d",
+								proto, startport);
+							endport = startport; /* range not supported yet */
+						} else {
+							libreswan_log("PAUL: protoport failed to convert: %s", ugh);
+						}
+
+					} else if (flp->bdry == B_record) {
+						libreswan_log("PAUL: flp->bdry == B_record");
+					} else if (flp->bdry == B_file) {
+						libreswan_log("PAUL: flp->bdry == B_file");
+					}
+					flushline(NULL);
+
+
 					/* Find where new entry ought to go in new_targets. */
 					struct fg_targets **pp;
 					int r;
@@ -171,18 +217,31 @@ static void read_foodgroup(struct fg_groups *g)
 
 						if (r <= 0)
 							break;
+
+						r = proto - (*pp)->proto;
+						if (r != 0)
+							break;
+
+						r = startport - (*pp)->startport;
+						if (r != 0)
+							break;
+						r = endport - (*pp)->endport;
+						if (r != 0)
+							break;
 					}
 
 					if (r == 0) {
 						char source[SUBNETTOT_BUF];
+						char dest[SUBNETTOT_BUF];
 
-						subnettot(lsn, 0, source,
-							  sizeof(source));
+						subnettot(lsn, 0, source, sizeof(source));
+						subnettot(&sn, 0, dest, sizeof(dest));
 						loglog(RC_LOG_SERIOUS,
-						       "\"%s\" line %d: subnet \"%s\", source %s, already \"%s\"",
+						       "\"%s\" line %d: subnet \"%s\", proto %d, port %d-%d, source %s, already \"%s\"",
 						       flp->filename,
 						       flp->lino,
-						       flp->tok,
+						       dest,
+						       proto, startport, endport,
 						       source,
 						       (*pp)->group->connection->name);
 					} else {
@@ -194,12 +253,16 @@ static void read_foodgroup(struct fg_groups *g)
 						f->next = *pp;
 						f->group = g;
 						f->subnet = sn;
+						f->proto = proto;
+						f->startport = startport;
+						f->endport = endport;
 						f->name = NULL;
 						*pp = f;
+						libreswan_log("PAUL: added %s", (*pp)->group->connection->name);
 					}
 				}
-				(void)shift(); /* next */
-				flushline("trailing characters after policy entry");
+				//(void)shift(); /* next */
+				//flushline("trailing characters after policy entry");
 				continue;
 			}
 
@@ -253,8 +316,9 @@ void load_groups(void)
 			    subnettot(&t->group->connection->spd.this.client,
 				      0, asource, sizeof(asource));
 			    subnettot(&t->subnet, 0, atarget, sizeof(atarget));
-			    DBG_log("%s->%s %s",
+			    DBG_log("%s->%s %d %d %s",
 				    asource, atarget,
+					t->proto, t->startport,
 				    t->group->connection->name);
 		    }
 	    });
@@ -273,6 +337,12 @@ void load_groups(void)
 
 			if (r == 0)
 				r = subnetcmp(&op->subnet, &np->subnet);
+			if (r == 0)
+				r = op->proto - np->proto;
+			if (r == 0)
+				r = op->startport = np->startport;
+			if ( r== 0)
+				r = op->endport = np->endport;
 
 			if (r == 0 && op->group == np->group) {
 				/* unchanged -- steal name & skip over */
@@ -291,7 +361,8 @@ void load_groups(void)
 				if (r >= 0) {
 					np->name = add_group_instance(
 						np->group->connection,
-						&np->subnet);
+						&np->subnet, np->proto,
+						np->startport, np->endport);
 					np = np->next;
 				}
 			}
@@ -302,7 +373,8 @@ void load_groups(void)
 
 		for (; np != NULL; np = np->next)
 			np->name = add_group_instance(np->group->connection,
-						      &np->subnet);
+						      &np->subnet, np->proto,
+						      np->startport, np->endport);
 
 		/* update: new_targets replaces targets */
 		free_targets();

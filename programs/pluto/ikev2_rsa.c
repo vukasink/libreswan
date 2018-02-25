@@ -89,7 +89,7 @@ static void ikev2_calculate_sighash(struct state *st,
 	struct crypt_hash *ctx = crypt_hash_init(&ike_alg_hash_sha1,
 						 "sighash", DBG_CRYPT);
 	crypt_hash_digest_chunk(ctx, "first packet", firstpacket);
-	crypt_hash_digest_chunk(ctx, "nunce", *nonce);
+	crypt_hash_digest_chunk(ctx, "nonce", *nonce);
 
 	/* we took the PRF(SK_d,ID[ir]'), so length is prf hash length */
 	crypt_hash_digest_bytes(ctx, "IDHASH", idhash,

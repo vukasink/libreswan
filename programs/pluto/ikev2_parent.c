@@ -2709,7 +2709,7 @@ static stf_status ikev2_send_auth(struct connection *c,
 				  enum original_role role,
 				  enum next_payload_types_ikev2 np,
 				  unsigned char *idhash_out,
-				  pb_stream*outpbs,
+				  pb_stream *outpbs,
 				  chunk_t *null_auth)
 {
 	struct ikev2_a a;
@@ -2815,8 +2815,8 @@ static stf_status ikev2_send_auth(struct connection *c,
 
 	/* we sent normal IKEv2_AUTH_RSA but the policy also allows NULL
 	 * authentication, so we will NULL_AUTH in separate chunk and
-	 * send it later as a Notify */
-	if (a.isaa_type == IKEv2_AUTH_RSA && c->policy & POLICY_AUTH_NULL) {
+	 * send it later as a Notify (we do all of that if we are initiator) */
+	if (role == ORIGINAL_INITIATOR && authby == AUTH_RSASIG && c->policy & POLICY_AUTH_NULL) {
 		if (!ikev2_create_psk_auth(AUTH_NULL, pst, idhash_out, &a_pbs,
 			TRUE, /* only store it */
 			null_auth /* store it here */)) {

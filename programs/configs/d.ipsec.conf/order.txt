@@ -35,6 +35,10 @@ d.ipsec.conf/ikepad.xml
 d.ipsec.conf/ikev2.xml
 d.ipsec.conf/mobike.xml
 d.ipsec.conf/esn.xml
+d.ipsec.conf/send-redirect.xml
+d.ipsec.conf/redirect-to.xml
+d.ipsec.conf/accept-redirect.xml
+d.ipsec.conf/accept-redirect-to.xml
 d.ipsec.conf/decap-dscp.xml
 d.ipsec.conf/nopmtudisc.xml
 d.ipsec.conf/narrowing.xml
@@ -122,6 +126,8 @@ d.ipsec.conf/crl-strict.xml
 d.ipsec.conf/curl-iface.xml
 d.ipsec.conf/curl-timeout.xml
 d.ipsec.conf/ocsp-global.xml
+d.ipsec.conf/global-redirect.xml
+d.ipsec.conf/global-redirect-to.xml
 d.ipsec.conf/forwardcontrol.xml
 d.ipsec.conf/rp_filter.xml
 d.ipsec.conf/syslog.xml

@@ -1,0 +1,17 @@
+  <varlistentry>
+  <term><emphasis remap='B'>accept-redirect</emphasis></term>
+  <listitem>
+<para>
+Whether or not to allow to be redirected when received
+IKEv2 REDIRECT notify payloads (RFC 5685) in IKE_AUTH
+reply (so called connection based redirects). Typical use
+case for this is clients-server use case, where the client
+is the one receiving the payload and initiating new IKEv2
+exchange with the new gateway. Accepted values are
+<emphasis remap='B'>no</emphasis> (the default) meaning never process
+any received REDIRECT notify payload and
+<emphasis remap='B'>yes</emphasis> meaning always process and
+initiate a new connection.
+</para>
+  </listitem>
+  </varlistentry>

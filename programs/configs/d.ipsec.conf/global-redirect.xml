@@ -1,0 +1,17 @@
+  <varlistentry>
+  <term><emphasis remap='B'>global-redirect</emphasis></term>
+  <listitem>
+<para>
+Whether or not to send IKEv2 REDIRECT notify payloads
+(RFC 5685) in IKE_SA_INIT reply.
+Typical use case for this is clients-server
+use case, where the server is the one redirecting clients
+to other gateway. Accepted values are
+<emphasis remap='B'>on</emphasis> (always send),
+<emphasis remap='B'>off</emphasis> (never send) and
+<emphasis remap='B'>auto</emphasis> (the default),
+where auto currently means send payload if
+DDoS defence mechanism is active.
+</para>
+  </listitem>
+  </varlistentry>

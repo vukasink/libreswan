@@ -1,0 +1,15 @@
+  <varlistentry>
+  <term><emphasis remap='B'>global-redirect-to</emphasis></term>
+  <listitem>
+<para>
+Specify what address to put in IKEv2 REDIRECT notify payloads
+(where to redirect the other end). Both IPv4 and IPv6 addresses
+are supported as well the FQDNs. Only one address should be
+specified. All IKEv2 exchanges will be immediately (in IKE_SA_INIT
+reply) redirected to the given address.</para>
+<para>
+The value of this option is not considered at all if
+global-redirect is set to off.
+</para>
+  </listitem>
+  </varlistentry>

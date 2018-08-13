@@ -70,6 +70,7 @@
 #include "timer.h"
 #include "pluto_crypt.h"  /* for pluto_crypto_req & pluto_crypto_req_cont */
 #include "ikev2.h"
+#include "ikev2_redirect.h"
 #include "server.h" /* for pluto_seccomp */
 #include "kernel_alg.h"
 #include "ike_alg.h"
@@ -426,6 +427,23 @@ void whack_process(int whackfd, const struct whack_message *const m)
 
 	if (m->whack_connection)
 		add_connection(m);
+
+	if (m->active_redirect) {
+		ipstr_buf b;
+		char *redirect_gw;
+
+		redirect_gw = clone_str(ipstr(&m->active_redirect_gw, &b),
+				"active redirect gw ip");
+
+		if (!isanyaddr(&m->active_redirect_peer)) {
+			/* if we are redirecting one specific peer */
+			find_states_and_redirect(NULL, m->active_redirect_peer, redirect_gw);
+		} else {
+			/* we are redirecting all peers of one connection */
+			find_states_and_redirect(m->name, m->active_redirect_peer, redirect_gw);
+		}
+
+	}
 
 	/* update any socket buffer size before calling listen */
 	if (m->ike_buf_size != 0) {

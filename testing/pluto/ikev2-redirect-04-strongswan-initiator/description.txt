@@ -1,0 +1,7 @@
+IKEv2 REDIRECT mechanism interop test with redirection in IKE_AUTH
+
+west (strongswan) wants to connect to east (libreswan) but is
+redirected to north instead (libreswan).
+
+XXX east gets a message from kernel to reinitiate (responder initiates ???)
+to west - unwanted behaviour

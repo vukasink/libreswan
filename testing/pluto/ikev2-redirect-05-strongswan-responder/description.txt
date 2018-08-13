@@ -1,0 +1,8 @@
+IKEv2 REDIRECT mechanism interop test with redirection during
+an active session.
+
+west (libreswan) connects to east (strongswan) but is
+redirected to north (libreswan) after some time.
+
+??? there is no whack logging of the new IKEv2 exchange in west.console.txt ?
+??? there is one XFRM state for east left on west ? 

@@ -6322,6 +6322,9 @@ stf_status process_encrypted_informational_ikev2(struct state *st,
 	int ndp = 0;	/* number Delete payloads for IPsec protocols */
 	bool del_ike = FALSE;	/* any IKE SA Deletions? */
 	bool seen_and_parsed_redirect = FALSE;
+	struct connection *c = st->st_connection; /* because we delete state */
+	bool do_unroute = st->st_sent_redirect; /* also we copy it. st->st_sent redirect marks if we sent
+						 * redirect some time in the past (in IKE_AUTH) */
 	chunk_t cookie2 = empty_chunk;
 
 	/* Are we responding (as opposed to processing a response)? */
@@ -6755,6 +6758,9 @@ stf_status process_encrypted_informational_ikev2(struct state *st,
 			md->st = st = NULL;
 		}
 	}
+
+	if (do_unroute)
+		unroute_connection(c);
 
 	/* count as DPD/liveness only if there was no Delete */
 	if (!del_ike && ndp == 0) {

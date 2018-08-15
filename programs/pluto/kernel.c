@@ -1167,6 +1167,8 @@ void unroute_connection(struct connection *c)
 {
 	struct spd_route *sr;
 
+	DBG(DBG_KERNEL, DBG_log("PAUL: unroute_connection called"));
+
 	for (sr = &c->spd; sr; sr = sr->spd_next) {
 		enum routing_t cr = sr->routing;
 

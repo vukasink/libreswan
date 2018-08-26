@@ -31,6 +31,7 @@
 #include "ipsec_doi.h"
 #include "ikev2.h"
 #include "ikev2_send.h"
+#include "kernel.h"		/* needed for del_spi */
 
 #include "ikev2_redirect.h"
 
@@ -69,9 +70,9 @@ err_t build_redirect_notify_data(char *destination,
 				 chunk_t *data)
 {
 	ip_address ip_addr;
-	int redir_gw_type = 0;
-	size_t gw_identity_len = 0, data_len = 0;
-	char *tmp = NULL;
+	uint8_t redir_gw_type = 0, gw_identity_len = 0;	/* exactly one byte as per RFC */
+	size_t data_len = 0;
+	unsigned char *tmp = NULL;
 	err_t ugh = NULL;
 
 	passert(destination != NULL);
@@ -104,7 +105,7 @@ err_t build_redirect_notify_data(char *destination,
 	data_len = GW_PAYLOAD_INFO_SIZE + gw_identity_len + (global_red == TRUE ? nonce->len : 0);
 	*data = alloc_chunk(data_len, "data for REDIRECT Notify payload");	/* we free this in calling function
 										   or here (when len != gw_identity_len) */
-	tmp = (char *) data->ptr;
+	tmp = data->ptr;
 	*tmp++ = redir_gw_type;
 	*tmp++ = gw_identity_len;
 
@@ -301,6 +302,30 @@ err_t build_redirected_from_notify_data(ip_address old_gw_address, chunk_t *data
 	return NULL;
 }
 
+/*
+ * if we were redirected in AUTH, we must delete one XFRM
+ * state entry manually (to the old gateway), because
+ * teardown_half_ipsec_sa() in kernel.c, that is called eventually
+ * following the above EVENT_SA_EXPIRE, does not delete
+ * it. It does not delete it (via del_spi) because
+ * st->st_esp.present was not still at that point set to
+ * TRUE. (see the method teardown_half_ipsec_sa for more details)
+ *
+ * note: the IPsec SA is not truly and fully established when
+ * we are doing redirect in IKE_AUTH, and because of that
+ * we may delete XFRM state entry without any worries.
+ */
+static void del_spi_trick(struct state *st)
+{
+	if (del_spi(st->st_esp.our_spi, SA_ESP,
+		    &st->st_connection->temp_vars.old_gw_address,
+		    &st->st_connection->spd.this.host_addr)) {
+		DBG(DBG_CONTROL, DBG_log("redirect: successfully deleted lingering SPI entry"));
+	} else {
+		DBG(DBG_CONTROL, DBG_log("redirect: failed to delete lingering SPI entry"));
+	}
+}
+
 void initiate_redirect(struct state *st)
 {
 	struct connection *c = st->st_connection;
@@ -323,6 +348,10 @@ void initiate_redirect(struct state *st)
 				  realtimediff(c->temp_vars.first_redirect_time, realnow()))) {
 			loglog(RC_LOG_SERIOUS, "redirect loop, stop initiating IKEv2 exchanges");
 			event_force(EVENT_SA_EXPIRE, right_state);
+
+			if (st->st_redirected_in_auth)
+				del_spi_trick(right_state);
+
 			return;
 		} else {
 			c->temp_vars.num_redirects = 0;
@@ -342,6 +371,22 @@ void initiate_redirect(struct state *st)
 				NULL);
 
 	event_force(EVENT_SA_EXPIRE, right_state);
+	/*
+	 * if we were redirected in AUTH, we must delete one XFRM
+	 * state entry manually (to the old gateway), because
+	 * teardown_half_ipsec_sa() in kernel.c, that is called eventually
+	 * following the above EVENT_SA_EXPIRE, does not delete
+	 * it. It does not delete it (via del_spi) because
+	 * st->st_esp.present was not set to TRUE. (see the method
+	 * teardown_half_ipsec_sa for more details)
+	 *
+	 * note: the IPsec SA is not truly and fully established when
+	 * we are doing redirect in IKE_AUTH, and because of that
+	 * we may delete XFRM state entry without any worries.
+	 */
+	if (st->st_redirected_in_auth)
+		del_spi_trick(right_state);
+
 	return;
 }
 

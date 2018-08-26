@@ -1131,7 +1131,7 @@ static stf_status ikev2_parent_outI1_common(struct msg_digest *md UNUSED,
 	 * - if not, check if we support redirect mechanism
 	 *   and send v2N_REDIRECT_SUPPORTED if we do
 	 */
-	if (isvalidaddr(&c->temp_vars.redirect_ip)) {
+	if (!isanyaddr(&c->temp_vars.redirect_ip)) {
 		chunk_t old_gateway_data;
 		err_t e;
 
@@ -5156,6 +5156,7 @@ stf_status ikev2_parent_inR2(struct state *st, struct msg_digest *md)
 	}
 
 	if (initiate_redirect) {
+		st->st_redirected_in_auth = TRUE;
 		event_force(EVENT_v2_REDIRECT, st);
 		return STF_SUSPEND;
 	}

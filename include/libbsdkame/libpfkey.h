@@ -32,9 +32,6 @@
  * SUCH DAMAGE.
  */
 
-/* used in osx compilation */
-#define SADB_X_SATYPE_TCPSIGNATURE    10
-#define SADB_X_AALG_TCP_MD5    11
 #define K_SADB_EXT_MAX 24
 
 struct sadb_msg;
@@ -105,9 +102,6 @@ int pfkey_send_x1(int, u_int, u_int, u_int, const struct sockaddr *,
 		  caddr_t,
 		  u_int, u_int, u_int, u_int, u_int, u_int32_t, u_int32_t,
 		  u_int32_t, u_int32_t, u_int32_t);
-
-extern libreswan_keying_debug_func_t pfkey_debug_func;
-extern unsigned int bsdpfkey_lib_debug;
 
 extern void foreach_supported_alg(void (*algregister)(int satype,
 						      int extype,

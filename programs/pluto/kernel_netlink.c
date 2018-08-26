@@ -1033,7 +1033,6 @@ static bool migrate_xfrm_sa(const struct kernel_sa *sa)
 
 static bool netlink_migrate_sa(struct state *st)
 {
-
 	struct kernel_sa sa;
 	char mig_said[SAMIGTOT_BUF];
 
@@ -1344,7 +1343,6 @@ static bool netlink_add_sa(const struct kernel_sa *sa, bool replace)
 	}
 
 	if (sa->authkeylen != 0) {
-
 		const char *name = sa->integ->integ_netlink_xfrm_name;
 		if (name == NULL) {
 			loglog(RC_LOG_SERIOUS,
@@ -1404,10 +1402,9 @@ static bool netlink_add_sa(const struct kernel_sa *sa, bool replace)
 
 		req.n.nlmsg_len += attr->rta_len;
 		attr = (struct rtattr *)((char *)attr + attr->rta_len);
-
 	} else if (sa->esatype == ET_ESP) {
-
 		const char *name = sa->encrypt->encrypt_netlink_xfrm_name;
+
 		if (name == NULL) {
 			loglog(RC_LOG_SERIOUS,
 				"unknown encryption algorithm: %s",
@@ -2652,7 +2649,6 @@ static bool netlink_bypass_policy(int family, int proto, int port)
 
 		if (!netlink_policy(&req.n, 1, text))
 			return FALSE;
-
 	} else {
 		req.u.p.sel.dport = htons(port);
 		req.u.p.sel.dport_mask = 0xffff;
@@ -2705,7 +2701,6 @@ static bool netlink_v6holes()
 						ICMP_NEIGHBOR_DISCOVERY);
 		ret &= netlink_bypass_policy(AF_INET6, IPPROTO_ICMPV6,
 						ICMP_NEIGHBOR_SOLICITATION);
-
 	}
 
 	return ret;
@@ -2815,6 +2810,46 @@ static err_t netlink_migrate_sa_check(void)
 	}
 }
 
+static bool netlink_poke_ipsec_policy_hole(struct raw_iface *ifp, int fd)
+{
+	struct sadb_x_policy policy;
+	int level, opt;
+
+	zero(&policy);
+	policy.sadb_x_policy_len = sizeof(policy) /
+		IPSEC_PFKEYv2_ALIGN;
+	policy.sadb_x_policy_exttype = SADB_X_EXT_POLICY;
+	policy.sadb_x_policy_type = IPSEC_POLICY_BYPASS;
+	policy.sadb_x_policy_dir = IPSEC_DIR_INBOUND;
+	policy.sadb_x_policy_id = 0;
+
+	if (addrtypeof(&ifp->addr) == AF_INET6) {
+		level = IPPROTO_IPV6;
+		opt = IPV6_IPSEC_POLICY;
+	} else {
+		level = IPPROTO_IP;
+		opt = IP_IPSEC_POLICY;
+	}
+
+	if (setsockopt(fd, level, opt,
+		       &policy, sizeof(policy)) < 0) {
+		LOG_ERRNO(errno, "setsockopt IPSEC_POLICY in process_raw_ifaces()");
+		close(fd);
+		return false;
+	}
+
+	policy.sadb_x_policy_dir = IPSEC_DIR_OUTBOUND;
+
+	if (setsockopt(fd, level, opt,
+		       &policy, sizeof(policy)) < 0) {
+		LOG_ERRNO(errno, "setsockopt IPSEC_POLICY in process_raw_ifaces()");
+		close(fd);
+		return false;
+	}
+
+	return true;
+}
+
 const struct kernel_ops netkey_kernel_ops = {
 	.kern_name = "netkey",
 	.type = USE_NETKEY,
@@ -2850,4 +2885,5 @@ const struct kernel_ops netkey_kernel_ops = {
 	.overlap_supported = FALSE,
 	.sha2_truncbug_support = TRUE,
 	.v6holes = netlink_v6holes,
+	.poke_ipsec_policy_hole = netlink_poke_ipsec_policy_hole,
 };

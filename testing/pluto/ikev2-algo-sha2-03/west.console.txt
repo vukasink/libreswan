@@ -104,6 +104,7 @@ west #
 000 algorithm IKE encrypt: v1id=65004, v1name=OAKLEY_SERPENT_CBC, v2id=65004, v2name=SERPENT_CBC, blocksize=16, keydeflen=128
 000 algorithm IKE encrypt: v1id=65005, v1name=OAKLEY_TWOFISH_CBC, v2id=65005, v2name=TWOFISH_CBC, blocksize=16, keydeflen=128
 000 algorithm IKE encrypt: v1id=65289, v1name=OAKLEY_TWOFISH_CBC_SSH, v2id=65289, v2name=TWOFISH_CBC_SSH, blocksize=16, keydeflen=128
+000 algorithm IKE encrypt: v1id=-1, v1name=n/a, v2id=28, v2name=CHACHA20_POLY1305, blocksize=16, keydeflen=256
 000 algorithm IKE PRF: name=HMAC_MD5, hashlen=16
 000 algorithm IKE PRF: name=HMAC_SHA1, hashlen=20
 000 algorithm IKE PRF: name=HMAC_SHA2_256, hashlen=32
@@ -159,7 +160,7 @@ west #
 002 "westnet-eastnet-ipv4-psk-ikev2" #1: initiating v2 parent SA
 133 "westnet-eastnet-ipv4-psk-ikev2" #1: initiate
 133 "westnet-eastnet-ipv4-psk-ikev2" #1: STATE_PARENT_I1: sent v2I1, expected v2R1
-134 "westnet-eastnet-ipv4-psk-ikev2" #2: STATE_PARENT_I2: sent v2I2, expected v2R2 {auth=IKEv2 cipher=aes_gcm_16_256 integ=n/a prf=sha2_512 group=MODP2048}
+134 "westnet-eastnet-ipv4-psk-ikev2" #2: STATE_PARENT_I2: sent v2I2, expected v2R2 {auth=IKEv2 cipher=AES_GCM_16_256 integ=n/a prf=HMAC_SHA2_512 group=MODP2048}
 002 "westnet-eastnet-ipv4-psk-ikev2" #2: IKEv2 mode peer ID is ID_FQDN: '@east'
 003 "westnet-eastnet-ipv4-psk-ikev2" #2: Authenticated using authby=secret
 002 "westnet-eastnet-ipv4-psk-ikev2" #2: negotiated connection [192.0.1.0-192.0.1.255:0-65535 0] -> [192.0.2.0-192.0.2.255:0-65535 0]

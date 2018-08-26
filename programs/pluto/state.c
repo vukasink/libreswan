@@ -607,7 +607,6 @@ struct state *new_rstate(struct msg_digest *md)
  */
 void init_states(void)
 {
-
 }
 
 void delete_state_by_id_name(struct state *st, void *name)
@@ -831,7 +830,6 @@ void ikev2_expire_unused_parent(struct state *pst)
 
 static void flush_pending_child(struct state *pst, struct state *st)
 {
-
 	if (!IS_IKE_SA(pst))
 		return; /* we had better be a parent */
 
@@ -871,7 +869,6 @@ static void flush_pending_child(struct state *pst, struct state *st)
 
 static void flush_pending_children(struct state *pst)
 {
-
 	if (IS_CHILD_SA(pst))
 		return;
 
@@ -885,7 +882,6 @@ static void flush_pending_children(struct state *pst)
 
 static bool send_delete_check(const struct state *st)
 {
-
 	if (st->st_suppress_del_notify)
 		return FALSE;
 
@@ -1539,7 +1535,6 @@ static struct state *duplicate_state(struct state *st, sa_t sa_type)
 
 
 	if (sa_type == IPSEC_SA) {
-
 #   define clone_nss_symkey_field(field) nst->field = reference_symkey(__func__, #field, st->field)
 		clone_nss_symkey_field(st_skeyid_nss);
 		clone_nss_symkey_field(st_skey_d_nss); /* aka st_skeyid_d_nss */
@@ -1566,7 +1561,6 @@ static struct state *duplicate_state(struct state *st, sa_t sa_type)
 		state_clone_chunk(st_skey_responder_salt);
 
 #   undef state_clone_chunk
-
 	}
 
 	/*
@@ -2204,7 +2198,6 @@ void fmt_state(struct state *st, const monotime_t now,
 			 (unsigned long)st->st_clonedfrom);
 	} else {
 		if (st->hidden_variables.st_peer_supports_dpd) {
-
 			/* ??? why is printing -1 better than 0? */
 			snprintf(dpdbuf, sizeof(dpdbuf),
 				 "; lastdpd=%jds(seq in:%u out:%u)",
@@ -2506,7 +2499,6 @@ static int log_trafic_state(struct connection *c, void *arg UNUSED)
 
 void show_traffic_status(const char *name)
 {
-
 	if (name == NULL) {
 		struct state **array = sort_states(state_compare_serial);
 
@@ -2702,7 +2694,6 @@ void update_ike_endpoints(struct state *st,
 
 		addrtot(&st->st_remoteaddr, 0, oldip, sizeof(oldip));
 		addrtot(&md->sender, 0, newip, sizeof(newip));
-
 	} // why is below not part of this statement????
 
 	st->st_remoteaddr = md->sender;
@@ -2789,7 +2780,6 @@ bool update_mobike_endpoints(struct state *pst,
 
 			return TRUE;
 		}
-
 	}
 
 	if (!migrate_ipsec_sa(cst)) {
@@ -2808,7 +2798,6 @@ bool update_mobike_endpoints(struct state *pst,
 		pst->st_localaddr = cst->st_localaddr = md->iface->ip_addr;
 		pst->st_localport = cst->st_localport = md->iface->port;
 		pst->st_interface = cst->st_interface = md->iface;
-
 	} else {
 		/* MOBIKE responder */
 		c->spd.that.host_addr = md->sender;
@@ -3127,7 +3116,6 @@ static void append_word(char **sentence, const char *word)
  */
 void append_st_cfg_dns(struct state *st, const char *dnsip)
 {
-
 	if (st->st_seen_cfg_dns == NULL) {
 		st->st_seen_cfg_dns = clone_str(dnsip, "fresh append_st_cfg_dns");
 	} else {

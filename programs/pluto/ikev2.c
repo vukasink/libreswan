@@ -1954,7 +1954,6 @@ void ikev2_process_state_packet(struct ike_sa *ike, struct state *st,
 	md->svm = svm;
 
 	if (ix == ISAKMP_v2_CREATE_CHILD_SA) {
-
 		/*
 		 * XXX: This code was embedded in the end of the FSM
 		 * search loop.  Since it was always executed when the
@@ -2709,14 +2708,15 @@ static void log_stf_suspend(struct state *st, stf_status result)
 	set_cur_state(st);      /* might have changed */
 
 	fmt_conn_instance(st->st_connection, b);
-
-	DBG(DBG_CONTROL, DBG_log("\"%s\"%s #%lu complete v2 state %s transition with %s suspended from %s:%d",
-				st->st_connection->name, b, st->st_serialno,
-				st->st_state_name,
-				enum_show(&stfstatus_name, result),
-				st->st_suspended_md_func,
-				st->st_suspended_md_line
-				));
+	LSWDBGP(DBG_CONTROL, buf) {
+		lswlogf(buf, "\"%s\"%s #%lu complete v2 state %s transition with ",
+			st->st_connection->name, b, st->st_serialno,
+			st->st_state_name);
+		lswlog_v2_stf_status(buf, result);
+		lswlogf(buf, " suspended from %s:%d",
+			st->st_suspended_md_func,
+			st->st_suspended_md_line);
+	}
 }
 
 /* complete job started by the state-specific state transition function
@@ -2785,9 +2785,10 @@ void complete_v2_state_transition(struct msg_digest **mdp,
 		return;
 
 	case STF_IGNORE:
-		DBG(DBG_CONTROL,
-		    DBG_log("complete v2 state transition with %s",
-			    enum_show(&stfstatus_name, result)));
+		LSWDBGP(DBG_CONTROL, buf) {
+			lswlogs(buf, "complete v2 state transition with ");
+			lswlog_v2_stf_status(buf, result);
+		}
 		return;
 
 	default:
@@ -2826,13 +2827,12 @@ void complete_v2_state_transition(struct msg_digest **mdp,
 	 * STF_OK and yet have no remaining state object at this point.
 	 */
 
-	DBG(DBG_CONTROL,
-	    DBG_log("#%lu complete v2 state transition from %s with %s",
-		    (st == NULL ? SOS_NOBODY : st->st_serialno),
-		    from_state_name,
-		    (result > STF_FAIL
-		     ? enum_name(&ikev2_notify_names, result - STF_FAIL)
-		     : enum_name(&stfstatus_name, result))));
+	LSWDBGP(DBG_CONTROL, buf) {
+		lswlogf(buf, "#%lu complete v2 state transition from %s with ",
+			(st == NULL ? SOS_NOBODY : st->st_serialno),
+			from_state_name);
+		lswlog_v2_stf_status(buf, result);
+	}
 
 	switch (result) {
 	case STF_OK:
@@ -2975,4 +2975,14 @@ bool is_msg_response(const struct msg_digest *md)
 bool is_msg_request(const struct msg_digest *md)
 {
 	return !is_msg_response(md);
+}
+
+void lswlog_v2_stf_status(struct lswlog *buf, unsigned status)
+{
+	if (status <= STF_FAIL) {
+		lswlog_enum(buf, &stf_status_names, status);
+	} else {
+		lswlogs(buf, "STF_FAIL+");
+		lswlog_enum(buf, &ikev2_notify_names, status - STF_FAIL);
+	}
 }

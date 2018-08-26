@@ -167,8 +167,6 @@ extern bool ikev1_out_generic(u_int8_t np, struct_desc *sd,
 extern bool ikev1_out_generic_raw(u_int8_t np, struct_desc *sd,
 			    pb_stream *outs, const void *bytes, size_t len,
 			    const char *name) MUST_USE_RESULT;
-extern void out_modify_previous_np(u_int8_t np, pb_stream *outs);
-
 #define ikev1_out_generic_chunk(np, sd, outs, ch, name) \
 	ikev1_out_generic_raw((np), (sd), (outs), (ch).ptr, (ch).len, (name))
 extern bool out_zero(size_t len, pb_stream *outs, const char *name) MUST_USE_RESULT;
@@ -894,7 +892,7 @@ struct ikev2_id {
 	u_int8_t isai_np;		/* Next payload */
 	u_int8_t isai_critical;
 	u_int16_t isai_length;		/* Payload length */
-	u_int8_t isai_type;		/* transform type */
+	u_int8_t isai_type;		/* ID type */
 	u_int8_t isai_res1;
 	u_int16_t isai_res2;
 };

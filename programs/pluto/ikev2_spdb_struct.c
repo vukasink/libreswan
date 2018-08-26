@@ -71,20 +71,19 @@ static bool ikev2_out_attr(enum ikev2_trans_attr_type type,
 			   unsigned long val,
 			   pb_stream *pbs)
 {
-	struct ikev2_trans_attr attr;
-
 	/*
 	 * IKEv2 the type determines the format that an attribute must
 	 * use (in IKEv1 it was the value that determined this).
 	 */
 	switch (type) {
-
 	case IKEv2_KEY_LENGTH:
 		passert((val >> 16) == 0);
 		passert((type & ISAKMP_ATTR_AF_MASK) == 0);
 		/* set the short-form attribute format bit */
-		attr.isatr_type = type | ISAKMP_ATTR_AF_TV;
-		attr.isatr_lv = val;
+		struct ikev2_trans_attr attr = {
+			.isatr_type = type | ISAKMP_ATTR_AF_TV,
+			.isatr_lv = val,
+		};
 		if (!out_struct(&attr, &ikev2_trans_attr_desc, pbs, NULL))
 			return FALSE;
 		break;
@@ -345,9 +344,8 @@ static void print_proposal(struct lswlog *buf, int propnum,
 		pexpect(proposal->remote_spi.size <= sizeof(proposal->remote_spi.size));
 		lswlogs(buf, "SPI=");
 		size_t i;
-		for (i = 0; (i < proposal->remote_spi.size
-			     && i < sizeof(proposal->remote_spi.size));
-		     i++) {
+		for (i = 0; i < proposal->remote_spi.size &&
+			    i < sizeof(proposal->remote_spi.size); i++) {
 			lswlogf(buf, "%02x", proposal->remote_spi.bytes[i]);
 		}
 		sep = ";";
@@ -483,7 +481,6 @@ static int process_transforms(pb_stream *prop_pbs, struct lswlog *remote_print_b
 	for (remote_transform_nr = 0;
 	     remote_transform_nr < num_remote_transforms;
 	     remote_transform_nr++) {
-
 		lswlogs(remote_print_buf, remote_transform_sep);
 		remote_transform_sep = ";";
 
@@ -602,8 +599,8 @@ static int process_transforms(pb_stream *prop_pbs, struct lswlog *remote_print_b
 					if (local_transform >= *matching_local_transform) {
 						break;
 					}
-					if (local_transform->id == remote_transform.id
-					    && local_transform->attr_keylen == remote_transform.attr_keylen) {
+					if (local_transform->id == remote_transform.id &&
+					    local_transform->attr_keylen == remote_transform.attr_keylen) {
 						LSWDBGP(DBG_CONTROLMORE, buf) {
 							lswlogf(buf, "remote proposal %u transform %d (",
 								remote_propnum, remote_transform_nr);
@@ -1215,7 +1212,6 @@ stf_status ikev2_process_sa_payload(const char *what,
 			best_proposal = NULL;
 			status = STF_OK;
 		}
-
 	}
 
 	pfreeany(best_proposal); /* only free if still owned by us */
@@ -1963,14 +1959,14 @@ static struct ikev2_proposals default_ikev2_ike_proposals = {
 
 void ikev2_need_ike_proposals(struct connection *c, const char *why) {
 	if (c->ike_proposals != NULL) {
-		DBGF(DBG_CONTROL, "already determined local IKE proposals for %s (%s)",
+		DBGF(DBG_CONTROL, "already constructed local IKE proposals for connection %s (%s)",
 		     c->name, why);
 		return;
 	}
 
 	const char *notes;
 	if (c->alg_info_ike == NULL) {
-		DBGF(DBG_CONTROL, "selecting default local IKE proposals for %s (%s)",
+		DBGF(DBG_CONTROL, "selecting default constructed local IKE proposals for connection %s (%s)",
 		     c->name, why);
 		c->ike_proposals = &default_ikev2_ike_proposals;
 		notes = " (default)";
@@ -2005,7 +2001,7 @@ void ikev2_need_ike_proposals(struct connection *c, const char *why) {
 	}
 
 	LSWLOG(buf) {
-		lswlogf(buf, "local IKE proposals for %s (%s): ",
+		lswlogf(buf, "constructed local IKE proposals for %s (%s): ",
 			c->name, why);
 		print_proposals(buf, c->ike_proposals);
 		lswlogs(buf, notes);
@@ -2105,14 +2101,14 @@ void ikev2_need_esp_or_ah_proposals(struct connection *c,
 				    const struct oakley_group_desc *default_dh)
 {
 	if (c->esp_or_ah_proposals != NULL) {
-		DBGF(DBG_CONTROL, "already determined local ESP/AH proposals for %s (%s)",
+		DBGF(DBG_CONTROL, "already constructed local ESP/AH proposals for %s (%s)",
 		     c->name, why);
 		return;
 	}
 
 	const char *notes;
 	if (c->alg_info_esp == NULL) {
-		DBGF(DBG_CONTROL, "selecting default local ESP/AH proposals for %s (%s)",
+		DBGF(DBG_CONTROL, "selecting default construvted local ESP/AH proposals for %s (%s)",
 		     c->name, why);
 		lset_t esp_ah = c->policy & (POLICY_ENCRYPT | POLICY_AUTHENTICATE);
 		struct ikev2_proposals *default_proposals_missing_esn;
@@ -2185,7 +2181,6 @@ void ikev2_need_esp_or_ah_proposals(struct connection *c,
 		c->esp_or_ah_proposals = proposals;
 		notes = " (default)";
 	} else {
-
 		LSWDBGP(DBG_CONTROL, buf) {
 			lswlogs(buf, "constructing ESP/AH proposals with ");
 			if (default_dh == NULL) {
@@ -2269,7 +2264,7 @@ void ikev2_need_esp_or_ah_proposals(struct connection *c,
 	}
 
 	LSWLOG(buf) {
-		lswlogf(buf, "local ESP/AH proposals for %s (%s): ",
+		lswlogf(buf, "constructed local ESP/AH proposals for %s (%s): ",
 			c->name, why);
 		print_proposals(buf, c->esp_or_ah_proposals);
 		lswlogs(buf, notes);

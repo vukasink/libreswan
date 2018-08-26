@@ -85,8 +85,7 @@ endif
 
 ifeq ($(USE_BSDKAME),true)
 OBJS += kernel_bsdkame.o
-# LIBBSDPFKEY is presumably passed in.
-LDFLAGS += ${LIBBSDPFKEY}
+LDFLAGS += $(BSDPFKEYLIB)
 endif
 
 OBJS += x509.o
@@ -132,7 +131,6 @@ endif
 
 OBJS += ike_alg_dh_nss_ecp_ops.o
 OBJS += ike_alg_dh_nss_modp_ops.o
-OBJS += ike_alg_encrypt_nss_gcm_ops.o
 OBJS += ike_alg_hash_nss_ops.o
 OBJS += ike_alg_prf_hmac_ops.o
 OBJS += ike_alg_prf_nss_ops.o
@@ -153,9 +151,11 @@ LDFLAGS += -lpthread
 LDFLAGS += $(FIPSCHECK_LDFLAGS)
 LDFLAGS += $(LIBCAP_NG_LDFLAGS)
 
-# OSDEP already set in objdir.mk?
-OSDEP?=$(shell uname -s | tr 'A-Z' 'a-z')
-OBJS += sysdep_${OSDEP}.o
+ifeq ($(USE_BSDKAME),true)
+OBJS += kernel_bsd.o
+else
+OBJS += kernel_linux.o
+endif
 
 ifneq ($(LD_LIBRARY_PATH),)
 LDFLAGS+=-L$(LD_LIBRARY_PATH)

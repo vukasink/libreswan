@@ -59,13 +59,9 @@ OBJS += constants.o \
 ifeq ($(USE_NETKEY),true)
 OBJS += addr_lookup.o
 endif
-OBJS += kernel_alg.o
 
-ifeq ($(USE_KLIPS),true)
+OBJS += kernel_alg.o
 OBJS += kernel_sadb.o
-else ifeq ($(USE_NETKEY),true)
-OBJS += kernel_sadb.o
-endif
 
 # These get pulled in from the klips kernel code.
 VPATH += ${KLIPSSRCDIR}
@@ -138,8 +134,10 @@ CFLAGS += -I$(top_srcdir)/lib/libcrypto
 OBJS += ike_alg.o
 OBJS += ike_alg_test.o
 OBJS += ike_alg_encrypt_chacha20_poly1305.o
+OBJS += ike_alg_encrypt_nss_aead_ops.o
 OBJS += ike_alg_encrypt_nss_cbc_ops.o
 OBJS += ike_alg_encrypt_nss_ctr_ops.o
+OBJS += ike_alg_encrypt_nss_gcm_ops.o
 OBJS += ike_alg_desc.o
 ifeq ($(USE_3DES),true)
 OBJS += ike_alg_3des.o

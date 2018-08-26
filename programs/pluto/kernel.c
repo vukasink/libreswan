@@ -91,9 +91,9 @@ bool can_do_IPcomp = TRUE;  /* can system actually perform IPCOMP? */
  * It is assumed that the destination subnets agree; we are only
  * testing that the interfaces and nexthops match.
  */
-#define routes_agree(c, d) ((c)->interface->ip_dev == (d)->interface->ip_dev \
-				&& sameaddr(&(c)->spd.this.host_nexthop, \
-					&(d)->spd.this.host_nexthop))
+#define routes_agree(c, d) \
+	((c)->interface->ip_dev == (d)->interface->ip_dev && \
+	 sameaddr(&(c)->spd.this.host_nexthop, &(d)->spd.this.host_nexthop))
 
 const struct pfkey_proto_info null_proto_info[2] = {
 	{
@@ -168,7 +168,6 @@ void add_bare_shunt(const ip_subnet *ours, const ip_subnet *his,
 	int transport_proto, ipsec_spi_t shunt_spi,
 	const char *why)
 {
-
 	/* report any duplication; this should NOT happen */
 	struct bare_shunt **bspp = bare_shunt_ptr(ours, his, transport_proto);
 
@@ -959,10 +958,10 @@ static enum routability could_route(struct connection *c)
 	}
 
 	/* if routing would affect IKE messages, reject */
-	if (kern_interface != NO_KERNEL
-		&& c->spd.this.host_port != pluto_nat_port
-		&& c->spd.this.host_port != pluto_port &&
-		addrinsubnet(&c->spd.that.host_addr, &c->spd.that.client)) {
+	if (kern_interface != NO_KERNEL &&
+	    c->spd.this.host_port != pluto_nat_port &&
+	    c->spd.this.host_port != pluto_port &&
+	    addrinsubnet(&c->spd.that.host_addr, &c->spd.that.client)) {
 		loglog(RC_LOG_SERIOUS,
 			"cannot install route: peer is within its client");
 		return route_impossible;
@@ -1727,7 +1726,6 @@ bool assign_holdpass(const struct connection *c,
 					(c->policy & POLICY_NEGO_PASS) ? "delete narrow %pass" :
 						"delete narrow %hold"))
 		{
-
 			DBG(DBG_CONTROL,
 				DBG_log("assign_holdpass() delete_bare_shunt() succeeded"));
 		} else {
@@ -2921,7 +2919,6 @@ bool install_inbound_ipsec_sa(struct state *st)
 	 * we can refer to it in the incoming SA.
 	 */
 	if (st->st_refhim == IPSEC_SAREF_NULL && !st->st_outbound_done) {
-
 		DBG(DBG_CONTROL,
 			DBG_log("installing outgoing SA now as refhim=%u",
 				st->st_refhim));
@@ -3540,7 +3537,6 @@ const char *kernel_if_name(void)
  */
 bool get_sa_info(struct state *st, bool inbound, deltatime_t *ago /* OUTPUT */)
 {
-
 	struct connection *const c = st->st_connection;
 
 	if (kernel_ops->get_sa == NULL || (!st->st_esp.present && !st->st_ah.present)) {

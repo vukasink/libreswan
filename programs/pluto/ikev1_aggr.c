@@ -298,13 +298,19 @@ static stf_status aggr_inI1_outR1_continue2_tail(struct msg_digest *md,
 	 * to always send one.
 	 */
 	bool send_cert = st->st_oakley.auth == OAKLEY_RSA_SIG &&
-		mycert.ty != CERT_NONE && mycert.u.nss_cert != NULL &&
+		mycert.ty != CERT_NONE &&
+		mycert.u.nss_cert != NULL &&
 		((c->spd.this.sendcert == CERT_SENDIFASKED &&
 		  st->hidden_variables.st_got_certrequest) ||
 		 c->spd.this.sendcert == CERT_ALWAYSSEND
 		);
 
 	bool send_authcerts = (send_cert && c->send_ca != CA_SEND_NONE);
+
+	/*****
+	 * From here on, if send_authcerts, we are obligated to:
+	 * free_auth_chain(auth_chain, chain_len);
+	 *****/
 
 	chunk_t auth_chain[MAX_CA_PATH_LEN] = { { NULL, 0 } };
 	int chain_len = 0;
@@ -359,13 +365,10 @@ static stf_status aggr_inI1_outR1_continue2_tail(struct msg_digest *md,
 
 	/* start of SA out */
 	{
-		struct isakmp_sa r_sa;
-		notification_t rn;
-
-		zero(&r_sa);	/* OK: no pointer fields */
-		r_sa.isasa_doi = ISAKMP_DOI_IPSEC;
-
-		r_sa.isasa_np = ISAKMP_NEXT_KE;
+		struct isakmp_sa r_sa = {
+			.isasa_doi = ISAKMP_DOI_IPSEC,
+			.isasa_np = ISAKMP_NEXT_KE,
+		};
 
 		pb_stream r_sa_pbs;
 
@@ -376,8 +379,8 @@ static stf_status aggr_inI1_outR1_continue2_tail(struct msg_digest *md,
 		}
 
 		/* SA body in and out */
-		rn = parse_isakmp_sa_body(&sa_pd->pbs, &sa_pd->payload.sa,
-					  &r_sa_pbs, FALSE, st);
+		notification_t rn = parse_isakmp_sa_body(&sa_pd->pbs,
+			&sa_pd->payload.sa, &r_sa_pbs, FALSE, st);
 		if (rn != NOTHING_WRONG) {
 			free_auth_chain(auth_chain, chain_len);
 			return STF_FAIL + rn;
@@ -412,9 +415,9 @@ static stf_status aggr_inI1_outR1_continue2_tail(struct msg_digest *md,
 		struct isakmp_ipsec_id id_hd;
 		chunk_t id_b;
 
-		build_id_payload(&id_hd, &id_b, &c->spd.this, FALSE);
+		build_id_payload(&id_hd, &id_b, &c->spd.this);
 		id_hd.isaiid_np =
-			(send_cert) ? ISAKMP_NEXT_CERT : auth_payload;
+			send_cert ? ISAKMP_NEXT_CERT : auth_payload;
 
 		if (!out_struct(&id_hd, &isakmp_ipsec_identification_desc,
 				&rbody, &r_id_pbs) ||
@@ -429,27 +432,26 @@ static stf_status aggr_inI1_outR1_continue2_tail(struct msg_digest *md,
 	/* CERT out */
 	if (send_cert) {
 		pb_stream cert_pbs;
-		struct isakmp_cert cert_hd;
-
+		struct isakmp_cert cert_hd = {
+			.isacert_np = send_cr ? ISAKMP_NEXT_CR : auth_payload,
+			.isacert_type = mycert.ty
+		};
 		libreswan_log("I am sending my certificate");
-
-		cert_hd.isacert_np = (send_cr) ? ISAKMP_NEXT_CR : auth_payload;
-		cert_hd.isacert_type = mycert.ty;
 		if (!out_struct(&cert_hd,
 				&isakmp_ipsec_certificate_desc,
 				&rbody,
-				&cert_pbs)) {
-			free_auth_chain(auth_chain, chain_len);
-			return STF_INTERNAL_ERROR;
-		}
-		if (!out_chunk(get_dercert_from_nss_cert(mycert.u.nss_cert),
+				&cert_pbs) ||
+		    !out_chunk(get_dercert_from_nss_cert(mycert.u.nss_cert),
 								&cert_pbs, "CERT")) {
 			free_auth_chain(auth_chain, chain_len);
 			return STF_INTERNAL_ERROR;
 		}
 		close_output_pbs(&cert_pbs);
-		free_auth_chain(auth_chain, chain_len);
 	}
+
+	free_auth_chain(auth_chain, chain_len);
+
+	/***** obligation to free_auth_chain has been discharged *****/
 
 	/* CERTREQ out */
 	if (send_cr) {
@@ -606,6 +608,7 @@ static void aggr_inR1_outI2_crypto_continue(struct state *st,
 
 	passert(st != NULL);
 	passert(*mdp != NULL);
+	passert((*mdp)->st == st);
 
 	if (!finish_dh_secretiv(st, r)) {
 		e = STF_FAIL + INVALID_KEY_INFORMATION;
@@ -660,6 +663,11 @@ static stf_status aggr_inR1_outI2_tail(struct msg_digest *md)
 
 	bool send_authcerts = (send_cert && c->send_ca != CA_SEND_NONE);
 
+	/*****
+	 * From here on, if send_authcerts, we are obligated to:
+	 * free_auth_chain(auth_chain, chain_len);
+	 *****/
+
 	chunk_t auth_chain[MAX_CA_PATH_LEN] = { { NULL, 0 } };
 	int chain_len = 0;
 
@@ -691,7 +699,7 @@ static stf_status aggr_inR1_outI2_tail(struct msg_digest *md)
 
 		hdr.isa_flags = 0; /* clear reserved fields */
 		memcpy(hdr.isa_rcookie, st->st_rcookie, COOKIE_SIZE);
-		hdr.isa_np = send_cert ? ISAKMP_NEXT_CERT : auth_payload;
+		hdr.isa_np = ISAKMP_NEXT_NONE,	/* rewritten */
 		hdr.isa_flags |= ISAKMP_FLAGS_v1_ENCRYPTION;
 
 		if (DBGP(IMPAIR_SEND_BOGUS_ISAKMP_FLAG)) {
@@ -705,64 +713,67 @@ static stf_status aggr_inR1_outI2_tail(struct msg_digest *md)
 		}
 	}
 
-	/* CERT out */
+	/* [ CERT out ] */
 	if (send_cert) {
 		pb_stream cert_pbs;
 
-		struct isakmp_cert cert_hd;
-		cert_hd.isacert_np = ISAKMP_NEXT_NONE; /* rewritten by NAT-D payloads */
-		cert_hd.isacert_type = mycert.ty;
-		cert_hd.isacert_reserved = 0;
-		cert_hd.isacert_length = 0; /* XXX unused on sending ? */
+		struct isakmp_cert cert_hd = {
+			.isacert_np = ISAKMP_NEXT_NONE, /* rewritten by NAT-D payloads */
+			.isacert_type = mycert.ty,
+			.isacert_reserved = 0,
+			.isacert_length = 0 /* XXX unused on sending ? */
+		};
 
 		libreswan_log("I am sending my cert");
 
 		if (!out_struct(&cert_hd,
 				&isakmp_ipsec_certificate_desc,
 				&rbody,
-				&cert_pbs)) {
-			free_auth_chain(auth_chain, chain_len);
-			return STF_INTERNAL_ERROR;
-		}
-
-		if (!out_chunk(get_dercert_from_nss_cert(mycert.u.nss_cert),
+				&cert_pbs) ||
+		    !out_chunk(get_dercert_from_nss_cert(mycert.u.nss_cert),
 								&cert_pbs, "CERT")) {
 			free_auth_chain(auth_chain, chain_len);
 			return STF_INTERNAL_ERROR;
 		}
 
 		close_output_pbs(&cert_pbs);
-		free_auth_chain(auth_chain, chain_len);
 	}
 
+	free_auth_chain(auth_chain, chain_len);
+
+	/***** obligation to free_auth_chain has been discharged *****/
+
+	/* [ NAT-D, NAT-D ] */
+	/* ??? why does this come before AUTH payload? */
 	if (st->hidden_variables.st_nat_traversal != LEMPTY) {
 		/* send two ISAKMP_NEXT_NATD_RFC* hash payloads to support NAT */
 		if (!ikev1_nat_traversal_add_natd(auth_payload, &rbody, md)) {
-			free_auth_chain(auth_chain, chain_len);
 			return STF_INTERNAL_ERROR;
 		}
 	}
 
 	/* HASH_I or SIG_I out */
 	{
-		u_char idbuf[1024]; /* fits all possible identity payloads? */
+		/* first build an ID payload as a raw material */
+
 		struct isakmp_ipsec_id id_hd;
 		chunk_t id_b;
-		pb_stream id_pbs;
-		u_char hash_val[MAX_DIGEST_LEN];
-		size_t hash_len;
+		build_id_payload(&id_hd, &id_b, &c->spd.this);
 
-		build_id_payload(&id_hd, &id_b, &c->spd.this, FALSE);
+		pb_stream id_pbs;
+		u_char idbuf[1024]; /* fits all possible identity payloads? */
 		init_out_pbs(&id_pbs, idbuf, sizeof(idbuf), "identity payload");
-		id_hd.isaiid_np = ISAKMP_NEXT_NONE;
+		pb_stream r_id_pbs;
 		if (!out_struct(&id_hd, &isakmp_ipsec_identification_desc,
-				&id_pbs, NULL) ||
-		    !out_chunk(id_b, &id_pbs, "my identity")) {
-			free_auth_chain(auth_chain, chain_len);
+				&id_pbs, &r_id_pbs) ||
+		    !out_chunk(id_b, &r_id_pbs, "my identity")) {
 			return STF_INTERNAL_ERROR;
 		}
+		close_output_pbs(&r_id_pbs);
+		close_output_pbs(&id_pbs);
 
-		hash_len = main_mode_hash(st, hash_val, TRUE, &id_pbs);
+		u_char hash_val[MAX_DIGEST_LEN];
+		size_t hash_len = main_mode_hash(st, hash_val, TRUE, &id_pbs);
 
 		if (auth_payload == ISAKMP_NEXT_HASH) {
 			/* HASH_I out */
@@ -789,7 +800,6 @@ static stf_status aggr_inR1_outI2_tail(struct msg_digest *md)
 					     "SIG_I"))
 				return STF_INTERNAL_ERROR;
 		}
-
 	}
 
 	/* RFC2408 says we must encrypt at this point */
@@ -868,9 +878,8 @@ stf_status aggr_inI2(struct state *st, struct msg_digest *md)
 		pb_stream pbs;
 		pb_stream id_pbs;
 
-		build_id_payload(&id_hd, &id_b, &st->st_connection->spd.that, FALSE);
+		build_id_payload(&id_hd, &id_b, &st->st_connection->spd.that);
 		init_out_pbs(&pbs, idbuf, sizeof(idbuf), "identity payload");
-		id_hd.isaiid_np = ISAKMP_NEXT_NONE;
 
 		/* interop ID for SoftRemote & maybe others ? */
 		id_hd.isaiid_protoid = st->st_peeridentity_protocol;
@@ -882,12 +891,22 @@ stf_status aggr_inI2(struct state *st, struct msg_digest *md)
 			return STF_INTERNAL_ERROR;
 
 		close_output_pbs(&id_pbs);
+
+		/* rewind id_pbs and read what we wrote */
 		id_pbs.roof = pbs.cur;
 		id_pbs.cur = pbs.start;
 		if (!in_struct(&id_pd.payload, &isakmp_identification_desc, &id_pbs,
 			  &id_pd.pbs))
 			return STF_FAIL + PAYLOAD_MALFORMED;
 	}
+
+	/*
+	 * ??? this looks like a really rude assignment
+	 *
+	 * - we are rewriting the input.  Sheesh!
+	 * - at least we undo the damage after calling oakley_id_and_auth.
+	 */
+	struct payload_digest *save_id = md->chain[ISAKMP_NEXT_ID];
 	md->chain[ISAKMP_NEXT_ID] = &id_pd;
 
 	/* HASH_I or SIG_I in */
@@ -902,7 +921,7 @@ stf_status aggr_inI2(struct state *st, struct msg_digest *md)
 	}
 
 	/* And reset the md to not leave stale pointers to our private id payload */
-	md->chain[ISAKMP_NEXT_ID] = NULL;
+	md->chain[ISAKMP_NEXT_ID] = save_id;
 
 	/**************** done input ****************/
 
@@ -1115,13 +1134,12 @@ static stf_status aggr_outI1_tail(struct state *st,
 	/* HDR out */
 	pb_stream rbody;
 	{
-		struct isakmp_hdr hdr;
-
-		zero(&hdr);	/* OK: no pointer fields */
-		hdr.isa_version = ISAKMP_MAJOR_VERSION << ISA_MAJ_SHIFT |
-				  ISAKMP_MINOR_VERSION;
-		hdr.isa_np = ISAKMP_NEXT_SA;
-		hdr.isa_xchg = ISAKMP_XCHG_AGGR;
+		struct isakmp_hdr hdr = {
+			.isa_version = ISAKMP_MAJOR_VERSION << ISA_MAJ_SHIFT |
+				  ISAKMP_MINOR_VERSION,
+			.isa_np = ISAKMP_NEXT_SA,
+			.isa_xchg = ISAKMP_XCHG_AGGR,
+		};
 		memcpy(hdr.isa_icookie, st->st_icookie, COOKIE_SIZE);
 		/* R-cookie, flags and MessageID are left zero */
 
@@ -1164,7 +1182,7 @@ static stf_status aggr_outI1_tail(struct state *st,
 		chunk_t id_b;
 		pb_stream id_pbs;
 
-		build_id_payload(&id_hd, &id_b, &c->spd.this, FALSE);
+		build_id_payload(&id_hd, &id_b, &c->spd.this);
 		id_hd.isaiid_np = send_cr ? ISAKMP_NEXT_CR : ISAKMP_NEXT_VID;
 		if (!out_struct(&id_hd, &isakmp_ipsec_identification_desc,
 				&rbody, &id_pbs) ||

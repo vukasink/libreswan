@@ -350,7 +350,7 @@ void initiate_redirect(struct state *st)
 			event_force(EVENT_SA_EXPIRE, right_state);
 
 			if (st->st_redirected_in_auth)
-				del_spi_trick(right_state);
+				del_spi_trick(st);
 
 			return;
 		} else {
@@ -385,7 +385,7 @@ void initiate_redirect(struct state *st)
 	 * we may delete XFRM state entry without any worries.
 	 */
 	if (st->st_redirected_in_auth)
-		del_spi_trick(right_state);
+		del_spi_trick(st);
 
 	return;
 }

@@ -231,6 +231,19 @@ struct sa_marks {
 	struct sa_mark out;
 };
 
+/* this struct will be used for
+ * storing ephemeral stuff, that doesn't
+ * need i.e. to be stored to connection
+ * .conf files.
+ */
+struct ephemeral_variables {
+	/* RFC 5685 - IKEv2 Redirect Mechanism */
+	int num_redirects;
+	realtime_t first_redirect_time;
+	ip_address redirect_ip;		/* where to redirect */
+	ip_address old_gw_address;	/* address of old gateway */
+};
+
 struct connection {
 	char *name;
 	char *foodgroup;
@@ -302,6 +315,8 @@ struct connection {
 	enum connection_kind kind;
 	const struct iface_port *interface;	/* filled in iff oriented */
 
+	struct ephemeral_variables temp_vars;
+
 	bool failed_ikev2;	/* tried ikev2, but failed */
 
 	so_serial_t		/* state object serial number */
@@ -346,10 +361,13 @@ struct connection {
 	char *modecfg_domains;
 	char *modecfg_banner;
 
-	uint8_t metric;	/* metric for tunnel routes */
-	uint16_t connmtu;	/* mtu for tunnel routes */
-	uint32_t statsval;	/* track what we have told statsd */
-	uint16_t nflog_group;	/* NFLOG group - 0 means disabled  */
+	char *redirect_to;
+	char *accept_redirect_to;
+
+	u_int8_t metric;	/* metric for tunnel routes */
+	u_int16_t connmtu;	/* mtu for tunnel routes */
+	u_int32_t statsval;	/* track what we have told statsd */
+	u_int16_t nflog_group;	/* NFLOG group - 0 means disabled  */
 	msgid_t ike_window;     /* IKE v2 window size 7296#section-2.3 */
 };
 

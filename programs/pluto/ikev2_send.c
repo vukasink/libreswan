@@ -622,3 +622,20 @@ stf_status send_v2_informational_request(const char *name,
 
 	return STF_OK;
 }
+
+/* helper function for sending AUTH_LIFETIME Notify in Informational requests */
+stf_status add_auth_notify_payload(struct state *st, pb_stream *pbs)
+{
+	chunk_t auth_lifetime_data = empty_chunk;
+	uint32_t lifetime = htonl(deltasecs(st->st_active_auth_life));
+
+	clonetochunk(auth_lifetime_data, &lifetime, sizeof(lifetime), "AUTH_LIFETIME time");
+	if (!emit_v2Ntd(v2N_AUTH_LIFETIME, &auth_lifetime_data, pbs)) {
+		/* free it before return if something isn't right */
+		freeanychunk(auth_lifetime_data);
+		return STF_INTERNAL_ERROR;
+	}
+	freeanychunk(auth_lifetime_data);
+
+	return STF_OK;
+}

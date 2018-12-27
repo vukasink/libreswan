@@ -1162,6 +1162,12 @@ struct ikev2_redirect_part {
 
 extern struct_desc ikev2_redirect_desc;
 
+struct ikev2_auth_lifetime_data {
+	u_int32_t auth_lifetime;
+};
+
+extern struct_desc ikev2_auth_lifetime_desc;
+
 #ifdef HAVE_LABELED_IPSEC
 extern struct_desc sec_ctx_desc;
 #endif

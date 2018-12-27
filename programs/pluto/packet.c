@@ -1508,6 +1508,27 @@ struct_desc ikev2_redirect_desc = {
 	.size = sizeof(struct ikev2_redirect_part),
 };
 
+/*
+ * IKEv2 AUTH_LIFETIME Notify Payload - Notification Data
+ *
+ * 			   1                   2                   3
+ *     0 1 2 3 4 5 6 7 8 9 0 1 2 3 4 5 6 7 8 9 0 1 2 3 4 5 6 7 8 9 0 1
+ *    +-+-+-+-+-+-+-+-+-+-+-+-+-+-+-+-+-+-+-+-+-+-+-+-+-+-+-+-+-+-+-+-+
+ *    |                           Lifetime                            |
+ *    +-+-+-+-+-+-+-+-+-+-+-+-+-+-+-+-+-+-+-+-+-+-+-+-+-+-+-+-+-+-+-+-+
+ *
+ */
+static field_desc ikev2authlifetime_fields[] = {
+	{ ft_nat, 32 / BITS_PER_BYTE, "AUTH Lifetime", NULL },
+	{ ft_end, 0, NULL, NULL }
+};
+
+struct_desc ikev2_auth_lifetime_desc = {
+	.name = "IKEv2 AUTH_LIFETIME Notify Data",
+	.fields = ikev2authlifetime_fields,
+	.size	= sizeof(struct ikev2_auth_lifetime_data),
+};
+
 static field_desc suggested_group_fields[] = {
 	{ ft_enum, 16 / BITS_PER_BYTE, "suggested DH Group", &oakley_group_names },
 	{ ft_end,  0, NULL, NULL }

@@ -490,6 +490,9 @@ void whack_process(fd_t whackfd, const struct whack_message *const m)
 		add_crl_fetch_requests(NULL);
 #endif
 
+	if (m->whack_send_reauth)
+		send_auth_lifetime_informational(m->name, m->sa_auth_life_seconds);
+
 	if (m->whack_list & LIST_PSKS)
 		list_psks();
 

@@ -421,7 +421,15 @@ struct state {
 	struct p_dns_req *ipseckey_dnsr;    /* ipseckey of that end */
 	struct p_dns_req *ipseckey_fwd_dnsr;/* validate IDi that IP in forward A/AAAA */
 
-	char *st_active_redirect_gw;	/* needed for sending of REDIRECT in informational */
+	/*
+	 * redundant fields that we need to have in struct state
+	 * in order to be able to send notifies in informational
+	 * messages
+	 */
+	char *st_active_redirect_gw;
+	deltatime_t st_active_auth_life;
+
+	deltatime_t st_recv_auth_life;
 
 	/** end of IKEv2-only things **/
 
@@ -773,6 +781,9 @@ struct state *find_v2_child_sa_by_outbound_spi(const ike_spis_t *ike_spis,
 extern void find_states_and_redirect(const char *conn_name,
 				     ip_address remote_ip,
 				     char *redirect_gw);
+
+extern void send_auth_lifetime_informational(const char *conn_name,
+					     deltatime_t auth_lifetime);
 
 extern struct state *ikev1_find_info_state(const ike_spi_t *ike_initiator_spi,
 					   const ike_spi_t *ike_responder_spi,

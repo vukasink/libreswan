@@ -155,6 +155,7 @@ void ipsecconf_default_values(struct starter_config *cfg)
 
 	cfg->conn_default.options[KBF_NIC_OFFLOAD] = yna_auto;
 	cfg->conn_default.options[KBF_IKELIFETIME] = IKE_SA_LIFETIME_DEFAULT;
+	cfg->conn_default.options[KBF_AUTHLIFETIME] = IKE_AUTH_LIFETIME_DEFAULT;
 
 	cfg->conn_default.options[KBF_REPLAY_WINDOW] = IPSEC_SA_DEFAULT_REPLAY_WINDOW;
 

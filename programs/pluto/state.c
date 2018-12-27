@@ -70,6 +70,7 @@
 #include "pluto_crypt.h"  /* for pluto_crypto_req & pluto_crypto_req_cont */
 #include "ikev2.h"
 #include "ikev2_redirect.h"
+#include "ikev2_send.h"	/* for sending AUTH_LIFETIME informational */
 #include "secrets.h"    /* unreference_key() */
 #include "enum_names.h"
 #include "crypt_dh.h"
@@ -1700,6 +1701,38 @@ void find_states_and_redirect(const char *conn_name,
 				conn_name);
 	}
 	pfree(redirect_gw);
+}
+
+/*
+ * Find a state object(s) with specific conn name
+ * and send IKEv2 informational.
+ * Used for sending AUTH_LIFETIME Notifies (RFC 4478)
+ */
+void send_auth_lifetime_informational(const char *conn_name,
+				      deltatime_t auth_lifetime)
+{
+	struct state *st = NULL;
+	bool found_conn = FALSE;
+	FOR_EACH_STATE_NEW2OLD(st) {
+		if (streq(conn_name, st->st_connection->name) &&
+		    IS_PARENT_SA(st))	/* to avoid sending multiple informationals */
+		{
+			found_conn = TRUE;
+			st->st_active_auth_life = auth_lifetime;
+			stf_status e = send_v2_informational_request("AUTH_LIFETIME informational request",
+					st, ike_sa(st), add_auth_notify_payload);
+			if (e == STF_OK) {
+				DBG(DBG_CONTROL,
+				    DBG_log("successfully sent AUTH_LIFETIME Informational to state #%lu", st->st_serialno));
+			} else {
+				DBG(DBG_CONTROL,
+				    DBG_log("failed to send AUTH_LIFETIME Informational to state #%lu", st->st_serialno));
+			}
+		}
+	}
+	if (!found_conn) {
+		libreswan_log("failed to find active connections with connection name '%s'", conn_name);
+	}
 }
 
 /*

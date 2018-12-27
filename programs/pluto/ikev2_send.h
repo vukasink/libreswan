@@ -79,4 +79,6 @@ bool emit_v2V(const char *string, pb_stream *outs);
 bool emit_v2N_signature_hash_algorithms(lset_t sighash_policy,
 					pb_stream *outs);
 
+stf_status add_auth_notify_payload(struct state *st, pb_stream *pbs);
+
 #endif

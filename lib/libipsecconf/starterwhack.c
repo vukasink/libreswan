@@ -543,6 +543,7 @@ static int starter_whack_basic_add_conn(struct starter_config *cfg,
 
 	msg.nic_offload = conn->options[KBF_NIC_OFFLOAD];
 	msg.sa_ike_life_seconds = deltatime(conn->options[KBF_IKELIFETIME]);
+	msg.sa_auth_life_seconds = deltatime(conn->options[KBF_AUTHLIFETIME]);
 	msg.sa_ipsec_life_seconds = deltatime(conn->options[KBF_SALIFETIME]);
 	msg.sa_rekey_margin = deltatime(conn->options[KBF_REKEYMARGIN]);
 	msg.sa_rekey_fuzz = conn->options[KBF_REKEYFUZZ];

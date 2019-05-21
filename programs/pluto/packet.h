@@ -1161,6 +1161,11 @@ struct ikev2_redirect_part {
 };
 extern struct_desc ikev2_redirect_desc;
 
+struct ikev2_auth_lifetime_data {
+	u_int32_t auth_lifetime;
+};
+extern struct_desc ikev2_auth_lifetime_desc;
+
 struct ikev2_notify_ipcomp_data {
 	u_int16_t ikev2_cpi;
 	u_int8_t ikev2_notify_ipcomp_trans;

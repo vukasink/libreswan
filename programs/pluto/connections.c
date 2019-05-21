@@ -1650,6 +1650,7 @@ static bool extract_connection(const struct whack_message *wm, struct connection
 
 		c->nic_offload = wm->nic_offload;
 		c->sa_ike_life_seconds = wm->sa_ike_life_seconds;
+		c->sa_auth_life_seconds = wm->sa_auth_life_seconds;
 		c->sa_ipsec_life_seconds = wm->sa_ipsec_life_seconds;
 		c->sa_rekey_margin = wm->sa_rekey_margin;
 		c->sa_rekey_fuzz = wm->sa_rekey_fuzz;
@@ -1687,6 +1688,13 @@ static bool extract_connection(const struct whack_message *wm, struct connection
 					(intmax_t) max_ipsec);
 				c->sa_ipsec_life_seconds = deltatime(max_ipsec);
 			}
+		}
+
+		/* RFC 4478 */
+		if (deltasecs(c->sa_auth_life_seconds) > (time_t) IKE_AUTH_LIFETIME_MAXIMUM) {
+			loglog(RC_LOG_SERIOUS, "IKE AUTH_LIFETIME limited to the maximum allowed %jds",
+					(intmax_t) IKE_AUTH_LIFETIME_MAXIMUM);
+			c->sa_auth_life_seconds = deltatime(IKE_AUTH_LIFETIME_MAXIMUM);
 		}
 
 		/* RFC 3706 DPD */

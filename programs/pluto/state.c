@@ -70,6 +70,7 @@
 #include "pluto_crypt.h"  /* for pluto_crypto_req & pluto_crypto_req_cont */
 #include "ikev2.h"
 #include "ikev2_redirect.h"
+#include "ikev2_send.h"	/* for sending AUTH_LIFETIME informational */
 #include "secrets.h"    /* unreference_key() */
 #include "enum_names.h"
 #include "crypt_dh.h"
@@ -1751,6 +1752,54 @@ void find_states_and_redirect(const char *conn_name,
 				conn_name);
 	}
 	pfree(redirect_gw);
+}
+
+payload_master_t add_auth_lifetime_payload;
+bool add_auth_lifetime_payload(struct state *st, pb_stream *pbs)
+{
+	chunk_t auth_lifetime_data = empty_chunk;
+	uint32_t lifetime = htonl(deltasecs(st->st_connection->sa_auth_life_seconds));
+
+	clonetochunk(auth_lifetime_data, &lifetime, sizeof(lifetime), "AUTH_LIFETIME time");
+	if (!emit_v2Nchunk(v2N_AUTH_LIFETIME, &auth_lifetime_data, pbs)) { 
+		freeanychunk(auth_lifetime_data);
+		return FALSE;
+	}
+	freeanychunk(auth_lifetime_data);
+	return TRUE;
+//	return emit_redirect_notification(st->st_active_redirect_gw, NULL, pbs);
+}
+
+/*
+ * Find a state object(s) with specific conn name
+ * and send IKEv2 informational.
+ * Used for sending AUTH_LIFETIME Notifies (RFC 4478)
+ */
+void send_auth_lifetime_informational(const char *conn_name,
+				      deltatime_t auth_lifetime)
+{
+	struct state *st = NULL;
+	bool found_conn = FALSE;
+	FOR_EACH_STATE_NEW2OLD(st) {
+		if (streq(conn_name, st->st_connection->name) &&
+		    IS_IKE_SA(st))	/* to avoid sending multiple informationals */
+		{
+			found_conn = TRUE;
+			st->st_active_auth_life = auth_lifetime;
+			stf_status e = record_v2_informational_request("AUTH_LIFETIME informational request",
+					ike_sa(st), st, add_auth_lifetime_payload);
+			if (e == STF_OK) {
+				DBG(DBG_CONTROL,
+				    DBG_log("successfully sent AUTH_LIFETIME Informational to state #%lu", st->st_serialno));
+			} else {
+				DBG(DBG_CONTROL,
+				    DBG_log("failed to send AUTH_LIFETIME Informational to state #%lu", st->st_serialno));
+			}
+		}
+	}
+	if (!found_conn) {
+		libreswan_log("failed to find active connections with connection name '%s'", conn_name);
+	}
 }
 
 /*

@@ -624,6 +624,7 @@ const struct keyword_def ipsec_conf_keywords[] = {
   { "keyingtries",  kv_conn,  kt_number,  KNCF_KEYINGTRIES, NULL, NULL, },
   { "replay-window",  kv_conn,  kt_number,  KNCF_REPLAY_WINDOW, NULL, NULL, },
   { "ikelifetime",  kv_conn,  kt_time,  KNCF_IKELIFETIME, NULL, NULL, },
+  { "authlifetime",  kv_conn,  kt_time,  KNCF_AUTHLIFETIME, NULL, NULL, },
   { "disablearrivalcheck",  kv_conn,  kt_invertbool,  KNCF_ARRIVALCHECK, NULL, NULL, },
   { "failureshunt",  kv_conn,  kt_enum,  KNCF_FAILURESHUNT,  &kw_failureshunt_list, NULL, },
   { "negotiationshunt",  kv_conn,  kt_enum,  KNCF_NEGOTIATIONSHUNT,  &kw_negotiationshunt_list, NULL, },

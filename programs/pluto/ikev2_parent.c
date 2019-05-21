@@ -3145,6 +3145,20 @@ static stf_status ikev2_parent_inI2outR2_auth_tail(struct state *st,
 
 		st->st_sent_redirect = TRUE;	/* mark that we have sent REDIRECT in IKE_AUTH */
 	}
+		
+// XXXXXXXXXXXXXXXXXXX
+	if (deltatime_cmp(c->sa_auth_life_seconds, deltatime(IKE_AUTH_LIFETIME_DEFAULT)) > 0) {
+		chunk_t auth_lifetime_data = empty_chunk;
+		uint32_t lifetime = htonl(deltasecs(c->sa_auth_life_seconds));
+
+		clonetochunk(auth_lifetime_data, &lifetime, sizeof(lifetime), "AUTH_LIFETIME time");
+		if (!emit_v2Nchunk(v2N_AUTH_LIFETIME, &auth_lifetime_data, &sk.pbs)) { 
+			freeanychunk(auth_lifetime_data);
+			return STF_INTERNAL_ERROR;
+		}
+		freeanychunk(auth_lifetime_data);
+	}
+// XXXXXXXXXXXXXXXXXXx
 
 	if (LIN(POLICY_TUNNEL, c->policy) == LEMPTY && st->st_seen_use_transport) {
 		if (!emit_v2N(v2N_USE_TRANSPORT_MODE, &sk.pbs))
@@ -3662,6 +3676,20 @@ stf_status ikev2_parent_inR2(struct state *st, struct msg_digest *md)
 				initiate_redirect = TRUE;
 				st->st_connection->temp_vars.redirect_ip = redirect_ip;
 			}
+			break;
+		}
+		case v2N_AUTH_LIFETIME:
+		{
+			DBG(DBG_CONTROL, DBG_log("received v2N_AUTH_LIFETIME in IKE_AUTH reply"));
+
+			struct ikev2_auth_lifetime_data parsed_lifetime;
+
+			if (!in_struct(&parsed_lifetime, &ikev2_auth_lifetime_desc, &ntfy->pbs, NULL)) {
+				DBG(DBG_CONTROL, DBG_log("received v2N_AUTH_LIFETIME is deformed"));
+				return STF_IGNORE;
+			}
+
+			st->st_recv_auth_life = deltatime(ntohl(parsed_lifetime.auth_lifetime));
 			break;
 		}
 		case v2N_ESP_TFC_PADDING_NOT_SUPPORTED:
@@ -5004,7 +5032,7 @@ static bool process_mobike_resp(struct msg_digest *md)
 	return ret;
 }
 
-/* currently we support only MOBIKE notifies and v2N_REDIRECT notify */
+/* currently we support: MOBIKE, REDIRECT and AUTH_LIFETIME notifies */
 static void process_informational_notify_req(struct msg_digest *md, bool *redirect, bool *ntfy_natd,
 		chunk_t *cookie2)
 {
@@ -5027,6 +5055,18 @@ static void process_informational_notify_req(struct msg_digest *md, bool *redire
 			} else {
 				*redirect = TRUE;
 				st->st_connection->temp_vars.redirect_ip = redirect_ip;
+			}
+			return;
+
+		case v2N_AUTH_LIFETIME:
+			DBG(DBG_CONTROLMORE, DBG_log("received v2N_AUTH_LIFETIME in informational"));
+
+			struct ikev2_auth_lifetime_data parsed_lifetime;
+
+			if (!in_struct(&parsed_lifetime, &ikev2_auth_lifetime_desc, &ntfy->pbs, NULL)) {
+				DBG(DBG_CONTROLMORE, DBG_log("received v2N_AUTH_LIFETIME is deformed"));
+			} else {
+				st->st_recv_auth_life = deltatime(ntohl(parsed_lifetime.auth_lifetime));
 			}
 			return;
 

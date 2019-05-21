@@ -171,6 +171,7 @@ struct whack_message {
 	lset_t policy;
 	lset_t sighash_policy;
 	deltatime_t sa_ike_life_seconds;
+	deltatime_t sa_auth_life_seconds;	/* RFC 4478 */
 	deltatime_t sa_ipsec_life_seconds;
 	deltatime_t sa_rekey_margin;
 	unsigned long sa_rekey_fuzz;
@@ -316,6 +317,9 @@ struct whack_message {
 
 	/* for WHACK_REREAD */
 	u_char whack_reread;
+
+	/* for --send-reauth, sending AUTH_LIFETIME in Informational */
+	bool whack_send_reauth;
 
 	/* for connalias string */
 	char *connalias;

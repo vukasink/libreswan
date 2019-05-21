@@ -100,6 +100,7 @@ static void help(void)
 		"		modp3072 | modp4096 | modp6144 | modp8192 \\\n"
 		"		dh22 | dh23 | dh24] \\\n"
 		"	[--ikelifetime <seconds>] [--ipseclifetime <seconds>] \\\n"
+		"	[--authlifetime <seconds>] \\\n"
 		"	[--rekeymargin <seconds>] [--rekeyfuzz <percentage>] \\\n"
 		"	[--retransmit-timeout <seconds>] \\\n"
 		"	[--retransmit-interval <msecs>] \\\n"
@@ -194,6 +195,8 @@ static void help(void)
 		"purge: whack --purgeocsp\n"
 		"\n"
 		"reread: whack [--rereadsecrets] [--fetchcrls] [--rereadall]\n"
+		"\n"
+		"reauth: whack --send-reauth <seconds> --name <connection_name>\n"
 		"\n"
 		"status: whack [--status] | [--trafficstatus] | [--globalstatus] | \\\n"
 		"	[--clearstats] | [--shuntstatus] | [--fipsstatus] | [--briefstatus] \n"
@@ -312,6 +315,8 @@ enum option_enums {
 	OPT_FETCHCRLS,
 	OPT_REREADALL,
 
+	OPT_SEND_REAUTH,
+
 	OPT_PURGEOCSP,
 
 	OPT_STATUS,
@@ -423,6 +428,7 @@ enum option_enums {
 	CD_RETRANSMIT_T,
 	CD_RETRANSMIT_I,
 	CD_IKELIFETIME,
+	CD_AUTHLIFETIME,
 	CD_IPSECLIFETIME,
 	CD_RKMARGIN,
 	CD_RKFUZZ,
@@ -555,6 +561,8 @@ static const struct option long_opts[] = {
 	{ "rereadcrls", no_argument, NULL, OPT_REREADCRLS + OO }, /* obsolete */
 	{ "fetchcrls", no_argument, NULL, OPT_FETCHCRLS + OO },
 	{ "rereadall", no_argument, NULL, OPT_REREADALL + OO },
+
+	{ "send-reauth", required_argument, NULL, OPT_SEND_REAUTH + OO + NUMERIC_ARG },
 
 	{ "purgeocsp", no_argument, NULL, OPT_PURGEOCSP + OO },
 
@@ -721,6 +729,7 @@ static const struct option long_opts[] = {
 	{ "rsa-sha2_512", no_argument, NULL, CD_RSA_SHA2_512 + OO },
 
 	{ "ikelifetime", required_argument, NULL, CD_IKELIFETIME + OO + NUMERIC_ARG },
+	{ "authlifetime", required_argument, NULL, CD_AUTHLIFETIME + OO + NUMERIC_ARG },
 	{ "ipseclifetime", required_argument, NULL, CD_IPSECLIFETIME + OO + NUMERIC_ARG },
 	{ "retransmit-timeout", required_argument, NULL, CD_RETRANSMIT_T + OO + NUMERIC_ARG },
 	{ "retransmit-interval", required_argument, NULL, CD_RETRANSMIT_I + OO + NUMERIC_ARG },
@@ -811,7 +820,8 @@ static void check_life_time(deltatime_t life, time_t raw_limit,
 			 (long)deltasecs(limit));
 		diag(buf);
 	}
-	if ((msg->policy & POLICY_DONT_REKEY) == LEMPTY && !deltaless(mint, life)) {
+	if ((msg->policy & POLICY_DONT_REKEY) == LEMPTY && !deltaless(mint, life)
+			&& strcmp(which, "authlifetime")) {
 		char buf[200];	/* arbitrary limit */
 
 		snprintf(buf, sizeof(buf),
@@ -1321,10 +1331,15 @@ int main(int argc, char **argv)
 			msg.whack_reread = REREAD_ALL;
 			continue;
 
+		case OPT_SEND_REAUTH:	/* --send-reauth */
+			msg.whack_send_reauth = TRUE;
+			msg.sa_auth_life_seconds = deltatime(opt_whole);
+			continue;
+
 		case OPT_PURGEOCSP:	/* --purgeocsp */
 			msg.whack_purgeocsp = TRUE;
 			continue;
-
+		
 		case OPT_STATUS:	/* --status */
 			msg.whack_status = TRUE;
 			ignore_errors = TRUE;
@@ -1753,6 +1768,10 @@ int main(int argc, char **argv)
 
 		case CD_IKELIFETIME:	/* --ikelifetime <seconds> */
 			msg.sa_ike_life_seconds = deltatime(opt_whole);
+			continue;
+
+		case CD_AUTHLIFETIME:	/* --authlifetime <seconds> */
+			msg.sa_auth_life_seconds = deltatime(opt_whole);
 			continue;
 
 		case CD_IPSECLIFETIME:	/* --ipseclifetime <seconds> */
@@ -2397,6 +2416,7 @@ int main(int argc, char **argv)
 		       LELEM(OPT_ROUTE) | LELEM(OPT_UNROUTE) |
 		       LELEM(OPT_INITIATE) | LELEM(OPT_TERMINATE) |
 		       LELEM(OPT_DELETE) |  LELEM(OPT_DELETEID) |
+		       LELEM(OPT_SEND_REAUTH) |
 		       LELEM(OPT_DELETEUSER) | LELEM(OPT_CD))) {
 		if (!LHAS(opts1_seen, OPT_NAME))
 			diag("missing --name <connection_name>");
@@ -2422,7 +2442,7 @@ int main(int argc, char **argv)
 	      msg.whack_terminate ||
 	      msg.whack_route || msg.whack_unroute || msg.whack_listen ||
 	      msg.whack_unlisten || msg.whack_list || msg.ike_buf_size ||
-	      msg.whack_ddos != DDOS_undefined ||
+	      msg.whack_ddos != DDOS_undefined || msg.whack_send_reauth ||
 	      msg.whack_reread || msg.whack_crash || msg.whack_shunt_status ||
 	      msg.whack_status || msg.whack_global_status || msg.whack_traffic_status ||
 	      msg.whack_fips_status || msg.whack_brief_status || msg.whack_clear_stats || msg.whack_options ||
@@ -2473,6 +2493,11 @@ int main(int argc, char **argv)
 
 	check_life_time(msg.sa_ipsec_life_seconds, IPSEC_SA_LIFETIME_MAXIMUM,
 			"ipseclifetime", &msg);
+
+	/* check lifetime if it is not 0 (default) */
+	if (deltatime_cmp(msg.sa_auth_life_seconds, deltatime(IKE_AUTH_LIFETIME_DEFAULT)))
+		check_life_time(msg.sa_auth_life_seconds, IKE_AUTH_LIFETIME_MAXIMUM,
+				"authlifetime", &msg);
 
 	if (deltasecs(msg.dpd_delay) != 0 &&
 	    deltasecs(msg.dpd_timeout) == 0)

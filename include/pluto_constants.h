@@ -41,9 +41,14 @@ enum ike_version {
  * IETF has no recommendations
  * FIPS SP800-77 sayas IKE max is 24h, IPsec max is 8h
  * We say maximum for either is 1d
+ *
+ * For AUTH lifetime the values bigger than maximum are
+ * considered unreasonable (RFC 4478)
  */
 #define IKE_SA_LIFETIME_DEFAULT secs_per_hour
 #define IKE_SA_LIFETIME_MAXIMUM secs_per_day
+#define IKE_AUTH_LIFETIME_DEFAULT 0
+#define IKE_AUTH_LIFETIME_MAXIMUM secs_per_day
 #define IPSEC_SA_LIFETIME_DEFAULT secs_per_hour * 8
 #define IPSEC_SA_LIFETIME_MAXIMUM secs_per_day
 #define FIPS_IPSEC_SA_LIFETIME_MAXIMUM secs_per_hour * 8

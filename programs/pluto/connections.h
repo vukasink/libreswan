@@ -254,6 +254,7 @@ struct connection {
 	lset_t policy;
 	lset_t sighash_policy;
 	deltatime_t sa_ike_life_seconds;
+	deltatime_t sa_auth_life_seconds;
 	deltatime_t sa_ipsec_life_seconds;
 	deltatime_t sa_rekey_margin;
 	unsigned long sa_rekey_fuzz;

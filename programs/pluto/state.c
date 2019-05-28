@@ -1758,7 +1758,7 @@ payload_master_t add_auth_lifetime_payload;
 bool add_auth_lifetime_payload(struct state *st, pb_stream *pbs)
 {
 	chunk_t auth_lifetime_data = empty_chunk;
-	uint32_t lifetime = htonl(deltasecs(st->st_connection->sa_auth_life_seconds));
+	uint32_t lifetime = htonl(deltasecs(st->st_active_auth_life));
 
 	clonetochunk(auth_lifetime_data, &lifetime, sizeof(lifetime), "AUTH_LIFETIME time");
 	if (!emit_v2Nchunk(v2N_AUTH_LIFETIME, &auth_lifetime_data, pbs)) { 
@@ -1778,22 +1778,32 @@ bool add_auth_lifetime_payload(struct state *st, pb_stream *pbs)
 void send_auth_lifetime_informational(const char *conn_name,
 				      deltatime_t auth_lifetime)
 {
+	
 	struct state *st = NULL;
 	bool found_conn = FALSE;
 	FOR_EACH_STATE_NEW2OLD(st) {
 		if (streq(conn_name, st->st_connection->name) &&
 		    IS_IKE_SA(st))	/* to avoid sending multiple informationals */
 		{
+			struct ike_sa *ike = ike_sa(st);
 			found_conn = TRUE;
 			st->st_active_auth_life = auth_lifetime;
 			stf_status e = record_v2_informational_request("AUTH_LIFETIME informational request",
-					ike_sa(st), st, add_auth_lifetime_payload);
+					ike, st, add_auth_lifetime_payload);
+
 			if (e == STF_OK) {
-				DBG(DBG_CONTROL,
-				    DBG_log("successfully sent AUTH_LIFETIME Informational to state #%lu", st->st_serialno));
+				send_recorded_v2_ike_msg(st, "active AUTH_LIFETIME informational request");
+				/*
+				 * XXX: record 'n' send violates the RFC.  This code
+				 * should instead let success_v2_state_transition()
+				 * deal with things.
+				 */
+				dbg("Message ID: IKE #%lu sender #%lu in %s hacking around record 'n' send",
+					ike->sa.st_serialno, st->st_serialno, __func__);
+				v2_msgid_update_sent(ike, &ike->sa, NULL /* new exchange */, MESSAGE_REQUEST);
+				libreswan_log("successfully sent AUTH_LIFETIME Informational to state #%lu", st->st_serialno);
 			} else {
-				DBG(DBG_CONTROL,
-				    DBG_log("failed to send AUTH_LIFETIME Informational to state #%lu", st->st_serialno));
+				libreswan_log("failed to send AUTH_LIFETIME Informational to state #%lu", st->st_serialno);
 			}
 		}
 	}

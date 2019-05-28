@@ -1783,13 +1783,12 @@ bool add_auth_lifetime_payload(struct state *st, pb_stream *pbs)
 	uint32_t lifetime = htonl(deltasecs(st->st_active_auth_life));
 
 	clonetochunk(auth_lifetime_data, &lifetime, sizeof(lifetime), "AUTH_LIFETIME time");
-	if (!emit_v2Nchunk(v2N_AUTH_LIFETIME, &auth_lifetime_data, pbs)) { 
+	if (!emit_v2Nchunk(v2N_AUTH_LIFETIME, &auth_lifetime_data, pbs)) {
 		freeanychunk(auth_lifetime_data);
 		return FALSE;
 	}
 	freeanychunk(auth_lifetime_data);
 	return TRUE;
-//	return emit_redirect_notification(st->st_active_redirect_gw, NULL, pbs);
 }
 
 /*
@@ -1800,7 +1799,6 @@ bool add_auth_lifetime_payload(struct state *st, pb_stream *pbs)
 void send_auth_lifetime_informational(const char *conn_name,
 				      deltatime_t auth_lifetime)
 {
-	
 	struct state *st = NULL;
 	bool found_conn = FALSE;
 	FOR_EACH_STATE_NEW2OLD(st) {

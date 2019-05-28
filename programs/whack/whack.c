@@ -1339,7 +1339,7 @@ int main(int argc, char **argv)
 		case OPT_PURGEOCSP:	/* --purgeocsp */
 			msg.whack_purgeocsp = TRUE;
 			continue;
-		
+
 		case OPT_STATUS:	/* --status */
 			msg.whack_status = TRUE;
 			ignore_errors = TRUE;

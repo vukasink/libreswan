@@ -3149,14 +3149,14 @@ static stf_status ikev2_parent_inI2outR2_auth_tail(struct state *st,
 
 		st->st_sent_redirect = TRUE;	/* mark that we have sent REDIRECT in IKE_AUTH */
 	}
-		
+
 	if (deltatime_cmp(c->sa_auth_life_seconds, deltatime(IKE_AUTH_LIFETIME_DEFAULT)) > 0) {
 		chunk_t auth_lifetime_data = empty_chunk;
 		/* convert it to network order because emit_v2Nchunk() does not use out_struct() */
 		uint32_t lifetime = htonl(deltasecs(c->sa_auth_life_seconds));
 
 		clonetochunk(auth_lifetime_data, &lifetime, sizeof(lifetime), "AUTH_LIFETIME time");
-		if (!emit_v2Nchunk(v2N_AUTH_LIFETIME, &auth_lifetime_data, &sk.pbs)) { 
+		if (!emit_v2Nchunk(v2N_AUTH_LIFETIME, &auth_lifetime_data, &sk.pbs)) {
 			freeanychunk(auth_lifetime_data);
 			return STF_INTERNAL_ERROR;
 		}

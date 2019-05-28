@@ -3,12 +3,12 @@
   <listitem>
 <para>How long the IKE SA should last before being renegotiated from
 scratch. The value is sent in AUTH_LIFETIME
-notify in IKE_AUTH response; acceptable values as for 
+notify in IKE_AUTH response; acceptable values as for
 <emphasis remap='B'>salifetime</emphasis> (default is 0s,
 the notify will not be sent, maximum is 24h, RFC 4478 claims
 that values under 300s are not reasonable).
-Sending AUTH_LIFETIME notifies in Informational can be triggered via the 
-<emphasis remap='I'>ipsec whack --send-reauth</emphasis> command.	  
+Sending AUTH_LIFETIME notifies in Informational can be triggered via the
+<emphasis remap='I'>ipsec whack --send-reauth</emphasis> command.
 </para>
   </listitem>
   </varlistentry>

@@ -820,8 +820,7 @@ static void check_life_time(deltatime_t life, time_t raw_limit,
 			 (long)deltasecs(limit));
 		diag(buf);
 	}
-	if ((msg->policy & POLICY_DONT_REKEY) == LEMPTY && !deltaless(mint, life)
-			&& strcmp(which, "authlifetime")) {
+	if ((msg->policy & POLICY_DONT_REKEY) == LEMPTY && !deltaless(mint, life)) {
 		char buf[200];	/* arbitrary limit */
 
 		snprintf(buf, sizeof(buf),

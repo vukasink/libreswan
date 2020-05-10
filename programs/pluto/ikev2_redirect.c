@@ -40,6 +40,69 @@
 
 enum allow_global_redirect global_redirect;
 char *global_redirect_to;
+struct redirect_dest *global_dests = NULL;
+
+void free_redirect_list(struct redirect_dest **dests)
+{
+	if (*dests == NULL)
+		return;
+
+	struct redirect_dest *curr = (*dests)->next;
+
+	while (curr != *dests) {
+		struct redirect_dest *next = curr->next;
+		pfreeany(curr->dest_str);
+		pfreeany(curr);
+		curr = next;
+	}
+	pfreeany((*dests)->dest_str);
+	pfreeany(*dests);
+	*dests = NULL;
+	return;
+}
+
+void init_redirect_list(char *redirect_dests_str, struct redirect_dest **dests)
+{
+	passert(dests != NULL);
+	if (redirect_dests_str == NULL)
+		return;
+
+	free_redirect_list(dests);
+
+	struct redirect_dest *first = NULL;
+	char *tok;
+
+	tok = strtok(redirect_dests_str, ", ");
+	while (tok != NULL) {
+		struct redirect_dest *dest = alloc_thing(struct redirect_dest,
+							"struct redirect_dest");
+		dest->dest_str = clone_str(tok, "single redirect dest");
+		if (*dests == NULL) {
+			*dests = dest;
+			first = dest;
+		} else {
+			(*dests)->next = dest;
+			*dests = dest;
+		}
+		tok = strtok(NULL, ", ");
+	}
+	/* make a list circular */
+	if (*dests != NULL) {
+		(*dests)->next = first;
+		*dests = first;
+	}
+	return;
+}
+
+char *get_redirect_dest(struct redirect_dest **dests)
+{
+	passert(dests != NULL);
+	if (*dests == NULL)
+		return NULL;
+	struct redirect_dest *curr = *dests;
+	*dests = (*dests)->next;
+	return curr->dest_str;
+}
 
 /*
  * Structure of REDIRECT Notify payload from RFC 5685.
@@ -161,7 +224,7 @@ bool redirect_global(struct msg_digest *md)
 	 * log message.
 	 */
 
-	if (global_redirect_to == NULL) {
+	if (global_dests == NULL) {
 		log_md(RC_LOG_SERIOUS, md,
 		       "global redirect destination is not specified");
 		return true;
@@ -188,7 +251,7 @@ bool redirect_global(struct msg_digest *md)
 		return true;
 	}
 
-	chunk_t data = build_redirect_notification_data(global_redirect_to, NULL, &Ni);
+	chunk_t data = build_redirect_notification_data(get_redirect_dest(&global_dests), NULL, &Ni);
 
 	if (data.len == 0) {
 		log_md(RC_LOG_SERIOUS, md,

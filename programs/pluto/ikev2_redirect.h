@@ -22,6 +22,35 @@
 
 extern enum allow_global_redirect global_redirect;
 extern char *global_redirect_to;
+extern struct redirect_dest *global_dests;
+
+struct redirect_dest {
+	char* dest_str;
+	struct redirect_dest *next;
+};
+
+extern void free_redirect_list(struct redirect_dest **dests);
+
+/*
+ * Allocate a circular list of (struct) redirect destinations.
+ *
+ * @param redirect_dests_str comma-separated string containing
+ * the destinations.
+ * @param dests double pointer to the circular list to be allocated.
+ */
+extern void init_redirect_list(char *redirect_dests_str,
+			       struct redirect_dest **c);
+
+/*
+ * Returns a string destination to be shipped in REDIRECT payload.
+ * The *dests will 'advance' one step, in order to 'update' the
+ * redirect destination.
+ *
+ * @param dests double pointer to a current node in circular list
+ * containing redirect destinations.
+ * @return char* string to be shipped.
+ */
+extern char *get_redirect_dest(struct redirect_dest **dests);
 
 /*
  * Check whether we received v2N_REDIRECT_SUPPORTED (in IKE_SA_INIT request),

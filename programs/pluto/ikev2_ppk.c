@@ -55,6 +55,8 @@ bool create_ppk_id_payload(chunk_t *ppk_id, struct ppk_id_payload *payl)
  */
 bool emit_unified_ppk_id(struct ppk_id_payload *payl, pb_stream *pbs)
 {
+	passert(payl != NULL);
+
 	u_char type = PPK_ID_FIXED;
 	return out_raw(&type, sizeof(type), pbs, "PPK_ID_FIXED") &&
 		pbs_out_hunk(payl->ppk_id, pbs, "PPK_ID");

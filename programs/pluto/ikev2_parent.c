@@ -2264,7 +2264,7 @@ static stf_status ikev2_parent_inR1outI2_auth_signature_continue(struct ike_sa *
 	if (pst->st_seen_ppk) {
 		chunk_t *ppk_id;
 		get_ppk(ike->sa.st_connection, &ppk_id);
-		struct ppk_id_payload ppk_id_p = { .type = 0, };
+		struct ppk_id_payload ppk_id_p = { .type = 0, .ppk_id = NULL_HUNK };
 		create_ppk_id_payload(ppk_id, &ppk_id_p);
 		if (DBGP(DBG_BASE)) {
 			DBG_log("ppk type: %d", (int) ppk_id_p.type);

@@ -23,6 +23,16 @@
 extern enum allow_global_redirect global_redirect;
 extern char *global_redirect_to;
 
+extern void free_global_redirect_dests(void);
+
+/*
+ * Initialize the static struct redirect_dests variable.
+ *
+ * @param grd_str comma-separated string containing the destinations
+ *  (a copy will be made so caller need not preserve the string)
+ */
+extern void init_global_redirect_dests(const char *gdr_str);
+
 /*
  * Check whether we received v2N_REDIRECT_SUPPORTED (in IKE_SA_INIT request),
  * and if we did, send a response with REDIRECT payload (without creating state -

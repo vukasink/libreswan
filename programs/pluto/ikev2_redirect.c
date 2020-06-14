@@ -409,14 +409,11 @@ void initiate_redirect(struct state *st)
 	ip_address redirect_ip = c->temp_vars.redirect_ip;
 
 	/* stuff for loop detection */
-	if (c->temp_vars.num_redirects == 0)
-		c->temp_vars.first_redirect_time = realnow();
-	c->temp_vars.num_redirects++;
 
-	if (c->temp_vars.num_redirects > MAX_REDIRECTS) {
-		/* XXX: is this correct? */
-		if (deltatime_cmp(deltatime(REDIRECT_LOOP_DETECT_PERIOD), !=,
-				  realtimediff(c->temp_vars.first_redirect_time, realnow()))) {
+	if (c->temp_vars.num_redirects >= MAX_REDIRECTS) {
+		if (deltatime_cmp(realtimediff(c->temp_vars.first_redirect_time, realnow()), <,
+				  deltatime(REDIRECT_LOOP_DETECT_PERIOD)))
+		{
 			loglog(RC_LOG_SERIOUS, "redirect loop, stop initiating IKEv2 exchanges");
 			event_force(EVENT_SA_EXPIRE, right_state);
 
@@ -424,10 +421,15 @@ void initiate_redirect(struct state *st)
 				del_spi_trick(st);
 
 			return;
-		} else {
-			c->temp_vars.num_redirects = 0;
 		}
+
+		/* restart count */
+		c->temp_vars.num_redirects = 0;
 	}
+
+	if (c->temp_vars.num_redirects == 0)
+		  c->temp_vars.first_redirect_time = realnow();
+	c->temp_vars.num_redirects++;
 
 	/* save old address for REDIRECTED_FROM notify */
 	c->temp_vars.old_gw_address = c->spd.that.host_addr;

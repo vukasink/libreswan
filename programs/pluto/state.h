@@ -870,6 +870,7 @@ struct child_sa *find_v2_child_sa_by_outbound_spi(struct ike_sa *ike,
 
 extern void find_states_and_redirect(const char *conn_name,
 				     char *redirect_gw,
+				     int every,
 				     struct fd *whackfd);
 
 extern struct state *find_v1_info_state(const ike_spis_t *ike_spis,

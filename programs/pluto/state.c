@@ -1812,35 +1812,56 @@ struct child_sa *find_v2_child_sa_by_outbound_spi(struct ike_sa *ike,
 }
 
 /*
- * Find a state object(s) with specific conn name/remote ip
- * and send IKEv2 informational.
  * Used for active redirect mechanism (RFC 5685)
+ *
+ * Find a state object(s) with specific conn name
+ * and send IKEv2 informational.
+ *
+ * variable every can be 1, ..., 256. If it is one, that means
+ * redirect every active tunnel we match. If it is > 1,
+ * that means redirect every #every tunnel.
+ * Example: every = 2 would mean redirect every 2nd tunnel
+ * that matches.
  */
 void find_states_and_redirect(const char *conn_name,
 			      char *redirect_gw,
+			      int every,
 			      struct fd *whackfd)
 {
-	int count = 0;
+	passert(every > ACTIVE_REDIRECT_OFF);
+	int cnt = 0;		/* only redirected clients */
+	int cnt_total = 0;	/* all matching clients */
+	int i = 0;
 
 	dbg("FOR_EACH_STATE_... in %s", __func__);
 	struct state *st = NULL;
 	FOR_EACH_STATE_NEW2OLD(st) {
-		if (streq(conn_name, st->st_connection->name) && IS_CHILD_SA(st))
+		if ((conn_name == NULL || streq(conn_name, st->st_connection->name)) &&
+		     IS_CHILD_SA(st))
 		{
-			count++;
-			st->st_active_redirect_gw = clone_str(redirect_gw, "redirect_gw address state clone");
-			DBG_log("successfully found a state (#%lu) with connection name \"%s\"",
-				st->st_serialno, conn_name);
-			send_active_redirect_in_informational(st);
+			i++;
+			cnt_total++;
+			if (i == every) {
+				cnt++;
+				i = 0;	/* 'reset' i */
+				st->st_active_redirect_gw = clone_str(redirect_gw,
+								     "redirect_gw address state clone");
+				DBG_log("successfully found a state (#%lu) with connection name \"%s\"",
+					st->st_serialno, conn_name);
+				send_active_redirect_in_informational(st);
+			}
 		}
 	}
 
-	if (count == 0) {
-		whack_log(RC_INFORMATIONAL, whackfd, "no active tunnels found for connection \"%s\"",
-			conn_name);
+	if (cnt == 0) {
+		whack_log(RC_INFORMATIONAL, whackfd, "no active tunnels found %s\"%s\"",
+			  conn_name != NULL ? "for connection " : "",
+			  conn_name != NULL ? conn_name : "");
 	} else {
-		whack_log(RC_INFORMATIONAL, whackfd, "redirections sent for %d tunnels of connection \"%s\"",
-			  count, conn_name);
+		whack_log(RC_INFORMATIONAL, whackfd,
+			  "redirections sent for %d tunnels (%.2f%%) %s\"%s\"",
+			  cnt, (double) cnt / cnt_total * 100, conn_name != NULL ? "of connection " : "",
+			  conn_name != NULL ? conn_name : "");
 	}
 	pfree(redirect_gw);
 }

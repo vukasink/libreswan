@@ -353,7 +353,7 @@ struct whack_message {
 	char *redirect_to;
 	char *accept_redirect_to;
 
-	bool active_redirect;
+	int active_redirect;	/* 0: off, 1: redirect every, n > 1: redirect every n-th */
 	ip_address active_redirect_gw;
 
 	/* what metric to put on ipsec routes */
@@ -371,6 +371,11 @@ struct whack_message {
 	size_t str_size;
 	unsigned char string[4096];
 };
+
+/* for struct whack_message active_redirect field */
+#define ACTIVE_REDIRECT_OFF	0
+#define ACTIVE_REDIRECT_ALL	1	/* redirect every active peer */
+#define ACTIVE_REDIRECT_MAX	256	/* arbitrary, but reasonable, limit */
 
 /* options of whack --list*** command
  * these should be kept in order of option_enums LST_ values

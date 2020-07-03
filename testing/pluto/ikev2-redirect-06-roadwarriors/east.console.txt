@@ -25,7 +25,7 @@ east #
  # send REDIRECT in informational to all tunnels from connection east-any (north and road)
 east #
  ipsec whack --redirect --name east-any --gateway 192.1.2.45
-005 redirections sent for 2 tunnels of connection "east-any"
+005 redirections sent for 2 tunnels (100.00%) of connection "east-any"
 east #
  # give them time to be redirected
 east #

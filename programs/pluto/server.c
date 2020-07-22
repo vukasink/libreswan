@@ -52,7 +52,6 @@
 #include <event2/event.h>
 #include <event2/event_struct.h>
 #include <event2/thread.h>
-#include <event2/listener.h>
 
 #include "sysdep.h"
 #include "socketwrapper.h"
@@ -78,8 +77,6 @@
 #include "ikev2.h"		/* for complete_v2_state_transition() */
 #include "state_db.h"
 #include "iface.h"
-#include "iface_udp.h"
-#include "iface_tcp.h"
 
 #ifdef USE_XFRM_INTERFACE
 #include "kernel_xfrm_interface.h"
@@ -222,43 +219,77 @@ static void free_static_event(struct event *ev)
  * Global timer events.
  */
 
-struct global_timer {
+struct global_timer_desc {
 	struct event ev;
 	global_timer_cb *cb;
-	const char *name;
+	const char *const name;
 };
 
-static struct global_timer global_timers[GLOBAL_TIMERS_ROOF];
+static struct global_timer_desc global_timers[] = {
+#define E(T) [T] = { .name = #T, }
+	E(EVENT_REINIT_SECRET),
+	E(EVENT_SHUNT_SCAN),
+	E(EVENT_PENDING_DDNS),
+	E(EVENT_SD_WATCHDOG),
+	E(EVENT_PENDING_PHASE2),
+	E(EVENT_CHECK_CRLS),
+	E(EVENT_REVIVE_CONNS),
+	E(EVENT_FREE_ROOT_CERTS),
+	E(EVENT_RESET_LOG_RATE_LIMIT),
+	E(EVENT_PROCESS_KERNEL_QUEUE),
+	E(EVENT_NAT_T_KEEPALIVE),
+#undef E
+};
 
-static void global_timer_event(evutil_socket_t fd UNUSED,
-			       const short event, void *arg)
+static void global_timer_event_cb(evutil_socket_t fd UNUSED,
+				  const short event, void *arg)
 {
 	passert(in_main_thread());
-	struct global_timer *gt = arg;
+	struct global_timer_desc *gt = arg;
 	passert(event & EV_TIMEOUT);
 	passert(gt >= global_timers);
 	passert(gt < global_timers + elemsof(global_timers));
 	dbg("processing global timer %s", gt->name);
 	threadtime_t start = threadtime_start();
-	gt->cb();
+	gt->cb(null_fd);
 	threadtime_stop(&start, SOS_NOBODY, "global timer %s", gt->name);
 }
 
-void enable_periodic_timer(enum event_type type, global_timer_cb *cb,
+void call_global_event_inline(enum global_timer timer, struct fd *whackfd)
+{
+	passert(in_main_thread());
+	if (!pexpect(timer < elemsof(global_timers))) {
+		/* timer is hardwired so shouldn't happen */
+		return;
+	}
+	struct global_timer_desc *gt = &global_timers[timer];
+	passert(gt->name != NULL);
+	if (!event_initialized(&gt->ev)) {
+		log_global(RC_LOG, whackfd, "inject: timer %s is not initialized",
+			   gt->name);
+	}
+	log_global(RC_LOG, whackfd, "inject: injecting timer event %s", gt->name);
+	threadtime_t start = threadtime_start();
+	gt->cb(whackfd);
+	threadtime_stop(&start, SOS_NOBODY, "global timer %s", gt->name);
+}
+
+void enable_periodic_timer(enum global_timer type, global_timer_cb *cb,
 			   deltatime_t period)
 {
 	passert(in_main_thread());
 	passert(type < elemsof(global_timers));
-	struct global_timer *gt = &global_timers[type];
+	struct global_timer_desc *gt = &global_timers[type];
 	/* initialize */
+	passert(gt->name != NULL);
 	passert(!event_initialized(&gt->ev));
 	event_assign(&gt->ev, pluto_eb, (evutil_socket_t)-1,
-		     EV_TIMEOUT|EV_PERSIST, global_timer_event, gt/*arg*/);
-	gt->name = enum_name(&timer_event_names, type);
+		     EV_TIMEOUT|EV_PERSIST,
+		     global_timer_event_cb, gt/*arg*/);
 	gt->cb = cb;
 	passert(event_get_events(&gt->ev) == (EV_TIMEOUT|EV_PERSIST));
 	/* enable */
-	struct timeval t = deltatimeval(period);
+	struct timeval t = timeval_from_deltatime(period);
 	passert(event_add(&gt->ev, &t) >= 0);
 	/* log */
 	deltatime_buf buf;
@@ -266,38 +297,40 @@ void enable_periodic_timer(enum event_type type, global_timer_cb *cb,
 	    gt->name, str_deltatime(period, &buf));
 }
 
-void init_oneshot_timer(enum event_type type, global_timer_cb *cb)
+void init_oneshot_timer(enum global_timer type, global_timer_cb *cb)
 {
 	passert(in_main_thread());
 	passert(type < elemsof(global_timers));
-	struct global_timer *gt = &global_timers[type];
+	struct global_timer_desc *gt = &global_timers[type];
+	/* initialize */
+	passert(gt->name != NULL);
 	passert(!event_initialized(&gt->ev));
 	event_assign(&gt->ev, pluto_eb, (evutil_socket_t)-1,
-		     EV_TIMEOUT, global_timer_event, gt/*arg*/);
-	gt->name = enum_name(&timer_event_names, type);
+		     EV_TIMEOUT,
+		     global_timer_event_cb, gt/*arg*/);
 	gt->cb = cb;
 	passert(event_get_events(&gt->ev) == (EV_TIMEOUT));
 	dbg("global one-shot timer %s initialized", gt->name);
 }
 
-void schedule_oneshot_timer(enum event_type type, deltatime_t delay)
+void schedule_oneshot_timer(enum global_timer type, deltatime_t delay)
 {
 	passert(type < elemsof(global_timers));
-	struct global_timer *gt = &global_timers[type];
+	struct global_timer_desc *gt = &global_timers[type];
 	deltatime_buf buf;
 	dbg("global one-shot timer %s scheduled in %s seconds",
 	    gt->name, str_deltatime(delay, &buf));
 	passert(event_initialized(&gt->ev));
 	passert(event_get_events(&gt->ev) == (EV_TIMEOUT));
-	struct timeval t = deltatimeval(delay);
+	struct timeval t = timeval_from_deltatime(delay);
 	passert(event_add(&gt->ev, &t) >= 0);
 }
 
 /* urban dictionary says deschedule is a word */
-void deschedule_oneshot_timer(enum event_type type)
+void deschedule_oneshot_timer(enum global_timer type)
 {
 	passert(type < elemsof(global_timers));
-	struct global_timer *gt = &global_timers[type];
+	struct global_timer_desc *gt = &global_timers[type];
 	dbg("global one-shot timer %s disabled", gt->name);
 	passert(event_initialized(&gt->ev));
 	passert(event_del(&gt->ev) >= 0);
@@ -306,7 +339,7 @@ void deschedule_oneshot_timer(enum event_type type)
 static void free_global_timers(void)
 {
 	for (unsigned u = 0; u < elemsof(global_timers); u++) {
-		struct global_timer *gt = &global_timers[u];
+		struct global_timer_desc *gt = &global_timers[u];
 		if (event_initialized(&gt->ev)) {
 			free_static_event(&gt->ev);
 			dbg("global timer %s uninitialized", gt->name);
@@ -318,7 +351,7 @@ static void list_global_timers(const struct fd *whackfd,
 			       monotime_t now)
 {
 	for (unsigned u = 0; u < elemsof(global_timers); u++) {
-		struct global_timer *gt = &global_timers[u];
+		struct global_timer_desc *gt = &global_timers[u];
 		/*
 		 * XXX: DUE.mt is "set to hold the time at which the
 		 * timeout will expire" which is presumably a time and
@@ -533,7 +566,7 @@ void fire_timer_photon_torpedo(struct event **evp,
 	 * before it has been saved by the helper thread.
 	 */
 	*evp = ev;
-	struct timeval t = deltatimeval(delay);
+	struct timeval t = timeval_from_deltatime(delay);
 	passert(event_add(ev, &t) >= 0);
 }
 
@@ -786,6 +819,17 @@ extern void schedule_callback(const char *name, so_serial_t serialno,
 				  deltatime(0)/*now*/);
 }
 
+void attach_fd_read_sensor(struct event **ev, evutil_socket_t fd,
+			   event_callback_fn cb, void *arg)
+{
+	passert(*ev == NULL);
+	*ev = event_new(get_pluto_event_base(), fd,
+			EV_READ|EV_PERSIST, cb, arg);
+	passert(*ev != NULL);
+	/* note call */
+	passert(event_add(*ev, NULL) >= 0);
+}
+
 /*
  * XXX: Some of the callers save the struct pluto_event reference but
  * some do not.
@@ -806,23 +850,8 @@ struct pluto_event *add_fd_read_event_handler(evutil_socket_t fd,
 	 * running, there can't be a race between the event being
 	 * added and the event firing.
 	 */
-	e->ev = event_new(pluto_eb, fd, EV_READ|EV_PERSIST, cb, arg);
-	passert(e->ev != NULL);
-	passert(event_add(e->ev, NULL) >= 0);
+	attach_fd_read_sensor(&e->ev, fd, cb, arg);
 	return e; /* compatible with pluto_event_new for the time being */
-}
-
-/*
- * XXX: Some of the callers save the struct pluto_event reference but
- * some do not.
- */
-struct evconnlistener *add_fd_accept_event_handler(struct iface_port *ifp,
-						   evconnlistener_cb cb)
-{
-	passert(in_main_thread());
-	return evconnlistener_new(pluto_eb, cb,
-				  ifp, LEV_OPT_CLOSE_ON_FREE|LEV_OPT_CLOSE_ON_EXEC,
-				  -1, ifp->fd);
 }
 
 /*
@@ -855,9 +884,9 @@ void timer_list(const struct fd *whackfd)
 	list_state_events(whackfd, nw);
 }
 
-void show_debug_status(const struct fd *whackfd)
+void show_debug_status(struct show *s)
 {
-	WHACK_LOG(RC_COMMENT, whackfd, buf) {
+	WHACK_LOG(RC_COMMENT, show_fd(s), buf) {
 		jam(buf, "debug:");
 		if (cur_debugging & DBG_MASK) {
 			jam(buf, " ");
@@ -871,19 +900,11 @@ void show_debug_status(const struct fd *whackfd)
 	}
 }
 
-void show_fips_status(const struct fd *whackfd)
+void show_fips_status(struct show *s)
 {
-#ifdef FIPS_CHECK
 	bool fips = libreswan_fipsmode();
-#else
-	bool fips = FALSE;
-#endif
-	whack_comment(whackfd, "FIPS mode %s", !fips ?
-#ifdef FIPS_CHECK
+	show_comment(s, "FIPS mode %s", !fips ?
 		"disabled" :
-#else
-		"disabled [support not compiled in]" :
-#endif
 		impair.force_fips ? "enabled [forced]" : "enabled");
 }
 
@@ -938,7 +959,7 @@ static void jam_pid_entry(struct lswlog *buf, const void *data)
 
 static hash_t pid_hasher(const pid_t *pid)
 {
-	return hasher(shunk2(pid, sizeof(*pid)), zero_hash);
+	return hash_table_hasher(shunk2(pid, sizeof(*pid)), zero_hash);
 }
 
 static hash_t pid_entry_hasher(const void *data)
@@ -971,8 +992,7 @@ static struct hash_table pids_hash_table = {
 static void add_pid(const char *name, so_serial_t serialno, pid_t pid,
 		    pluto_fork_cb *callback, void *context)
 {
-	DBG(DBG_CONTROL,
-	    DBG_log("forked child %d", pid));
+	dbg("forked child %d", pid);
 	struct pid_entry *new_pid = alloc_thing(struct pid_entry, "fork pid");
 	new_pid->magic = PID_MAGIC;
 	new_pid->pid = pid;
@@ -1009,8 +1029,7 @@ static void addconn_exited(struct state *null_st UNUSED,
 			   struct msg_digest *null_mdp UNUSED,
 			   int status, void *context UNUSED)
 {
-	DBG(DBG_CONTROLMORE,
-	   DBG_log("reaped addconn helper child (status %d)", status));
+	dbg("reaped addconn helper child (status %d)", status);
 	addconn_child_pid = 0;
 }
 
@@ -1051,18 +1070,16 @@ static void childhandler_cb(void)
 		switch (child) {
 		case -1: /* error? */
 			if (errno == ECHILD) {
-				DBG(DBG_CONTROLMORE,
-				    DBG_log("waitpid returned ECHILD (no child processes left)"));
+				dbg("waitpid returned ECHILD (no child processes left)");
 			} else {
 				LOG_ERRNO(errno, "waitpid unexpectedly failed");
 			}
 			return;
 		case 0: /* nothing to do */
-			DBG(DBG_CONTROLMORE,
-			    DBG_log("waitpid returned nothing left to do (all child processes are busy)"));
+			dbg("waitpid returned nothing left to do (all child processes are busy)");
 			return;
 		default:
-			LSWDBGP(DBG_CONTROLMORE, buf) {
+			LSWDBGP(DBG_BASE, buf) {
 				lswlogf(buf, "waitpid returned pid %d",
 					child);
 				log_status(buf, status);
@@ -1088,7 +1105,7 @@ static void childhandler_cb(void)
 					pid_entry->callback(NULL, NULL,
 							    status, pid_entry->context);
 				} else if (st == NULL) {
-					LSWDBGP(DBG_CONTROLMORE, buf) {
+					LSWDBGP(DBG_BASE, buf) {
 						jam_pid_entry(buf, pid_entry);
 						lswlogs(buf, " disappeared");
 					}
@@ -1099,8 +1116,9 @@ static void childhandler_cb(void)
 					struct msg_digest *md = unsuspend_md(st);
 					if (DBGP(DBG_CPU_USAGE)) {
 						deltatime_t took = monotimediff(mononow(), pid_entry->start_time);
-						DBG_log("#%lu waited "PRI_DELTATIME" for '%s' fork()",
-							st->st_serialno, pri_deltatime(took),
+						deltatime_buf dtb;
+						DBG_log("#%lu waited %s for '%s' fork()",
+							st->st_serialno, str_deltatime(took, &dtb),
 							pid_entry->name);
 					}
 					statetime_t start = statetime_start(st);
@@ -1188,7 +1206,7 @@ void call_server(char *conffile)
 	 * setup basic events, CTL and SIGNALs
 	 */
 
-	DBG(DBG_CONTROLMORE, DBG_log("Setting up events, loop start"));
+	dbg("Setting up events, loop start");
 
 	add_fd_read_event_handler(ctl_fd, whack_handle_cb, NULL, "PLUTO_CTL_FD");
 
@@ -1274,9 +1292,8 @@ void call_server(char *conffile)
 
 		/* Parent */
 
-		DBG(DBG_CONTROLMORE,
-		    DBG_log("created addconn helper (pid:%d) using %s+execve",
-			    addconn_child_pid, USE_VFORK ? "vfork" : "fork"));
+		dbg("created addconn helper (pid:%d) using %s+execve",
+		    addconn_child_pid, USE_VFORK ? "vfork" : "fork");
 		add_pid("addconn", SOS_NOBODY, addconn_child_pid,
 			addconn_exited, NULL);
 	}
@@ -1284,18 +1301,7 @@ void call_server(char *conffile)
 	/* parent continues */
 
 #ifdef HAVE_SECCOMP
-	switch (pluto_seccomp_mode) {
-	case SECCOMP_ENABLED:
-		init_seccomp_main(SCMP_ACT_KILL);
-		break;
-	case SECCOMP_TOLERANT:
-		init_seccomp_main(SCMP_ACT_TRAP);
-		break;
-	case SECCOMP_DISABLED:
-		break;
-	default:
-		bad_case(pluto_seccomp_mode);
-	}
+	init_seccomp_main();
 #else
 	libreswan_log("seccomp security not supported");
 #endif
@@ -1304,11 +1310,13 @@ void call_server(char *conffile)
 	passert(r == 0);
 }
 
-bool ev_before(struct pluto_event *pev, deltatime_t delay) {
+bool ev_before(struct pluto_event *pev, deltatime_t delay)
+{
 	struct timeval timeout;
-
-	return (event_pending(pev->ev, EV_TIMEOUT, &timeout) & EV_TIMEOUT) &&
-		deltaless_tv_dt(timeout, delay);
+	if (!(event_pending(pev->ev, EV_TIMEOUT, &timeout) & EV_TIMEOUT)) {
+		return false;
+	}
+	return deltatime_cmp(deltatime_from_timeval(timeout), <, delay);
 }
 
 void set_whack_pluto_ddos(enum ddos_mode mode)

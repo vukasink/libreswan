@@ -2,7 +2,7 @@
  *
  * Copyright (C) 1998, 1999, 2000  Henry Spencer.
  * Copyright (C) 1999, 2000, 2001  Richard Guy Briggs
- * Copyright (C) 2019 Andrew Cagney <cagney@gnu.org>
+ * Copyright (C) 2019-2020 Andrew Cagney <cagney@gnu.org>
  *
  * This library is free software; you can redistribute it and/or modify it
  * under the terms of the GNU Library General Public License as published by
@@ -22,19 +22,24 @@
 /*
  * This is not the subnet you're looking for.
  *
- * In libreswan ip_subnet is used to store client routing information.
- * IKEv2 calls this traffic selectors and it allows the negotiation
- * of:
+ * In libreswan ip_subnet is used to store multiple things:
  *
- *    LO_ADDRESS..HI_ADDRESS : LO_PORT..HI_PORT
  *
- * The structures below can only handle a limited subset of this,
- * namely:
+ * #1 addresses i.e., NETWORK_PREFIX|HOST_IDENTIFIER / MASK
+ * #2 subnets i.e., NETWORK_PREFIX|0 / MASK
  *
- *    NETWORK_PREFIX | 0 / MASK : PORT
+ * OK, so far so good, they are kind of eqivalent.
+ *
+ * #3 selectors i.e., NETWORK_PREFIX | 0 / MASK : PORT
  *
  * where PORT==0 imples 0..65535, and (presumably) port can only be
  * non-zero when the NETWORK_PREFIX/MASK is for a single address.
+ *
+ * the latter being a less general form of:
+ *
+ *    LO_ADDRESS..HI_ADDRESS : LO_PORT..HI_PORT
+ *
+ *
  */
 
 /*
@@ -53,14 +58,36 @@ typedef struct {
 #ifdef SUBNET_TYPE
 	/* proper subnet, not libreswan mashup */
 	ip_address addr;
-	int maskbits;
 #else
 	/* (routing)prefix|host(id):port */
 	ip_endpoint addr;
+	bool is_selector;
+#endif
 	/* (routing prefix) bits */
 	int maskbits;
-#endif
+	bool is_subnet;
 } ip_subnet;
+
+#define PRI_SUBNET "{"PRI_ADDRESS"} maskbits=%u is_subnet=%s is_selector=%s"
+#define pri_subnet(S, B)						\
+	pri_address(&(S)->addr, B),					\
+		(S)->maskbits,						\
+		bool_str((S)->is_subnet),				\
+		bool_str((S)->is_selector)
+
+#define psubnet(S)							\
+	{								\
+		if ((S) != NULL && (S)->addr.version != 0) {		\
+			if ((S)->is_subnet == false ||			\
+			    (S)->is_selector == true) {			\
+				address_buf b_;				\
+				where_t here_ = HERE;			\
+				dbg("EXPECTATION FAILED: %s is not a subnet; "PRI_SUBNET" "PRI_WHERE, \
+				    #S, pri_subnet(S, &b_),		\
+				    pri_where(here_));			\
+			}						\
+		}							\
+	}
 
 /*
  * Constructors
@@ -68,9 +95,12 @@ typedef struct {
 
 /* ADDRESS..ADDRESS:0..65535 */
 ip_subnet subnet_from_address(const ip_address *address);
-/* ENDPOINT.ADDRESS..ENDPOINT.ADDRESS:ENDPOINT.PORT..ENDPOINT.PORT */
-/* XXX: what hapens if ENDPOINT.PORT==0 */
-ip_subnet subnet_from_endpoint(const ip_endpoint *endpoint);
+
+err_t address_mask_to_subnet(const ip_address *address, const ip_address *mask,
+			     ip_subnet *subnet);
+
+/* convert CIDR addresss/mask to subnet */
+err_t text_cidr_to_subnet(shunk_t cidr, const struct ip_info *afi, ip_subnet *subnet);
 
 /*
  * Format as a string.
@@ -80,8 +110,7 @@ typedef struct {
 	char buf[sizeof(address_buf) + 4/*"/NNN"*/];
 } subnet_buf;
 extern const char *str_subnet(const ip_subnet *subnet, subnet_buf *out);
-
-extern void jam_subnet(struct lswlog *buf, const ip_subnet *subnet);
+extern size_t jam_subnet(struct lswlog *buf, const ip_subnet *subnet);
 
 /*
  * Magic values.
@@ -99,36 +128,32 @@ extern const ip_subnet unset_subnet;
 
 const struct ip_info *subnet_type(const ip_subnet *subnet);
 
-bool subnet_is_set(const ip_subnet *subnet);
-bool subnet_is_specified(const ip_subnet *subnet);
+bool subnet_is_unset(const ip_subnet *subnet);
+#define subnet_is_set !subnet_is_unset
 
 /* default route - ::/0 or 0.0.0.0/0 - matches all addresses */
 bool subnet_contains_all_addresses(const ip_subnet *subnet);
+/* !unset, !all, !none */
+bool subnet_is_specified(const ip_subnet *subnet);
+/* ADDRESS..ADDRESS; unlike subnetishost() this rejects 0.0.0.0/32. */
+bool subnet_contains_one_address(const ip_subnet *subnet);
 /* unspecified address - ::/128 or 0.0.0.0/32 - matches no addresses */
 bool subnet_contains_no_addresses(const ip_subnet *subnet);
-#if 0
-/* ADDRESS..ADDRESS:0..65535 in SUBNET */
-bool subnet_contains_address(const ip_subnet *subnet, const ip_address *address);
-/* ADDRESS..ADDRESS:PORT..PORT in SUBNET */
-bool subnet_contains_endpoint(const ip_subnet *subnet, const ip_address *address);
-#endif
+
+/* ADDRESS..ADDRESS in SUBNET */
+bool address_in_subnet(const ip_address *address, const ip_subnet *subnet);
 
 /* h(ost) or n(etwork) ordered */
 int subnet_hport(const ip_subnet *subnet);
-int subnet_nport(const ip_subnet *subnet);
-
-ip_subnet set_subnet_hport(const ip_subnet *subnet,
-			   int hport) MUST_USE_RESULT;
-
-#define update_subnet_hport(SUBNET, HPORT)			\
-	{ *(SUBNET) = set_subnet_hport(SUBNET, HPORT); }
-#define update_subnet_nport(SUBNET, NPORT)			\
-	{ *(SUBNET) = set_subnet_hport(SUBNET, ntohs(NPORT)); }
 
 /* when applied to an address, leaves just the routing prefix */
 extern ip_address subnet_mask(const ip_subnet *subnet);
 /* Given ROUTING_PREFIX|HOST_ID return ROUTING_PREFIX|0 */
 ip_address subnet_prefix(const ip_subnet *subnet);
+/* Given ROUTING_PREFIX|HOST_ID return 0|HOST_ID */
+ip_address subnet_host(const ip_subnet *subnet);
+/* Given ROUTING_PREFIX|HOST_ID return ROUTING_PREFIX|HOST_ID */
+ip_address subnet_address(const ip_subnet *subnet);
 
 /*
  * old
@@ -140,7 +165,6 @@ extern err_t ttosubnet(const char *src, size_t srclen, int af, int clash, ip_sub
 extern err_t initsubnet(const ip_address *addr, int maskbits, int clash,
 		 ip_subnet *dst);
 extern err_t endtosubnet(const ip_endpoint *end, ip_subnet *dst, where_t where);
-#define addrtosubnet(ADDR, DST) endtosubnet(ADDR, DST, HERE)
 
 /* misc. conversions and related */
 extern err_t rangetosubnet(const ip_address *from, const ip_address *to,

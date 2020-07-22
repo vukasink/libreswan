@@ -23,11 +23,12 @@
 #include "server.h"
 #include "log.h"
 
-size_t lswlog_retransmit_prefix(struct lswlog *buf, struct state *st)
-{
-	return lswlogf(buf, "#%ld %s: retransmits: ",
-		       st->st_serialno, st->st_state->name);
-}
+#define dbg_retransmit(ST, FMT, ...)				\
+	{							\
+		dbg("#%ld %s: retransmits: "FMT,		\
+		    st->st_serialno, st->st_state->name,	\
+		    ##__VA_ARGS__);				\
+	}
 
 unsigned long retransmit_count(struct state *st)
 {
@@ -63,7 +64,7 @@ static void double_delay(retransmit_t *rt, unsigned long nr_retransmits)
 {
 	if (nr_retransmits > 0) {
 		deltatime_t delay = deltatime_add(rt->delay, rt->delay);
-		if (deltatime_cmp(delay, rt->timeout) < 0) {
+		if (deltatime_cmp(delay, <, rt->timeout)) {
 			rt->delay = delay;
 		}
 	}
@@ -82,20 +83,14 @@ bool count_duplicate(struct state *st, unsigned long limit)
 	if (nr_retransmits < limit) {
 		double_delay(rt, nr_retransmits);
 		rt->nr_duplicate_replies++;
-		LSWDBGP(DBG_RETRANSMITS, buf) {
-			lswlog_retransmit_prefix(buf, st);
-			lswlogf(buf, "duplicate reply %lu + retransmit %lu of duplicate limit %lu (retransmit limit %lu)",
+		dbg_retransmit(st, "duplicate reply %lu + retransmit %lu of duplicate limit %lu (retransmit limit %lu)",
 			       rt->nr_duplicate_replies, rt->nr_retransmits,
 			       limit, rt->limit);
-		}
 		return true;
 	} else {
-		LSWDBGP(DBG_RETRANSMITS, buf) {
-			lswlog_retransmit_prefix(buf, st);
-			lswlogf(buf, "total duplicate replies (%lu) + retransmits (%lu) exceeds duplicate limit %lu (retransmit limit %lu)",
-				rt->nr_duplicate_replies, +rt->nr_retransmits,
-				limit, rt->limit);
-		}
+		dbg_retransmit(st, "total duplicate replies (%lu) + retransmits (%lu) exceeds duplicate limit %lu (retransmit limit %lu)",
+			       rt->nr_duplicate_replies, +rt->nr_retransmits,
+			       limit, rt->limit);
 		return false;
 	}
 }
@@ -109,10 +104,8 @@ void clear_retransmits(struct state *st)
 	rt->delay = deltatime(0);
 	rt->start = monotime_epoch;
 	rt->timeout = deltatime(0);
-	LSWDBGP(DBG_RETRANSMITS, buf) {
-		lswlog_retransmit_prefix(buf, st);
-		lswlogs(buf, "cleared");
-	}
+	event_delete(EVENT_RETRANSMIT, st);
+	dbg_retransmit(st, "cleared");
 }
 
 void start_retransmits(struct state *st)
@@ -137,22 +130,20 @@ void start_retransmits(struct state *st)
 		rt->delay = c->r_timeout;
 		LSWLOG(buf) {
 			lswlogs(buf, "IMPAIR: suppressing retransmits; scheduling timeout in ");
-			lswlog_deltatime(buf, rt->delay);
+			jam_deltatime(buf, rt->delay);
 			lswlogs(buf, " seconds");
 		}
 	}
 	rt->start = mononow();
 	rt->delays = rt->delay;
 	event_schedule(EVENT_RETRANSMIT, rt->delay, st);
-	LSWDBGP(DBG_RETRANSMITS, buf) {
-		lswlog_retransmit_prefix(buf, st);
-		lswlogs(buf, "first event in ");
-		lswlog_deltatime(buf, rt->delay);
-		lswlogs(buf, " seconds; timeout in ");
-		lswlog_deltatime(buf, rt->timeout);
-		lswlogf(buf, " seconds; limit of %lu retransmits; current time is ", rt->limit);
-		lswlog_monotime(buf, rt->start);
-	}
+	deltatime_buf db, tb;
+	monotime_buf mb;
+	dbg_retransmit(st, "first event in %s seconds; timeout in %s seconds; limit of %lu retransmits; current time is %s",
+		       str_deltatime(rt->delay, &db),
+		       str_deltatime(rt->timeout, &tb),
+		       rt->limit,
+		       str_monotime(rt->start, &mb));
 }
 
 /*
@@ -204,27 +195,25 @@ enum retransmit_status retransmit(struct state *st)
 	monotime_t now = mononow();
 	unsigned long nr_retransmits = retransmit_count(st);
 	bool retransmit_count_exceeded = nr_retransmits >= rt->limit;
-	bool deltatime_exceeds_limit = deltatime_cmp(rt->delays, rt->timeout) >= 0;
+	bool deltatime_exceeds_limit = deltatime_cmp(rt->delays, >=, rt->timeout);
 	deltatime_t waited = monotimediff(now, rt->start);
-	bool monotime_exceeds_limit = deltatime_cmp(waited, rt->timeout) >= 0;
-	LSWDBGP(DBG_RETRANSMITS, buf) {
-		lswlogs(buf, "retransmits: ");
-		lswlogs(buf, "current time ");
-		lswlog_monotime(buf, now);
-		/* number of packets so far */
-		lswlogf(buf, "; retransmit count %lu exceeds limit? %s", nr_retransmits,
-			retransmit_count_exceeded ? "YES" : "NO");
-		/* accumulated delay (ignores timewarp) */
-		lswlogs(buf, "; deltatime ");
-		lswlog_deltatime(buf, rt->delays);
-		lswlogf(buf, " exceeds limit? %s",
-			deltatime_exceeds_limit ? "YES" : "NO");
-		/* waittime, perhaps went to sleep but can warp */
-		lswlogs(buf, "; monotime ");
-		lswlog_deltatime(buf, waited);
-		lswlogf(buf, " exceeds limit? %s",
-			monotime_exceeds_limit ? "YES" : "NO");
-	}
+	bool monotime_exceeds_limit = deltatime_cmp(waited, >=, rt->timeout);
+	monotime_buf mb;
+
+	dbg_retransmit(st, "current time %s", str_monotime(now, &mb));
+	/* number of packets so far */
+	dbg_retransmit(st, "retransmit count %lu exceeds limit? %s", nr_retransmits,
+		       retransmit_count_exceeded ? "YES" : "NO");
+	/* accumulated delay (ignores timewarp) */
+	deltatime_buf dt;
+	dbg_retransmit(st, "deltatime %s  exceeds limit? %s",
+		       str_deltatime(rt->delays, &dt),
+		       deltatime_exceeds_limit ? "YES" : "NO");
+	/* waittime, perhaps went to sleep but can warp */
+	deltatime_buf wb;
+	dbg_retransmit(st, "monotime %s exceeds limit? %s",
+		       str_deltatime(waited, &wb),
+		       monotime_exceeds_limit ? "YES" : "NO");
 
 	if (retransmit_count_exceeded ||
 	    monotime_exceeds_limit ||
@@ -234,10 +223,10 @@ enum retransmit_status retransmit(struct state *st)
 			if (retransmit_count_exceeded) {
 				lswlogf(buf, "max number of retransmissions (%lu) reached after ",
 					nr_retransmits);
-				lswlog_deltatime(buf, waited);
+				jam_deltatime(buf, waited);
 				lswlogs(buf, " seconds");
 			} else {
-				lswlog_deltatime(buf, rt->timeout);
+				jam_deltatime(buf, rt->timeout);
 				lswlogf(buf, " second timeout exceeded after %lu retransmits",
 					nr_retransmits);
 			}
@@ -277,7 +266,7 @@ enum retransmit_status retransmit(struct state *st)
 	LSWLOG_RC(RC_RETRANSMISSION, buf) {
 		lswlogf(buf, "%s: retransmission; will wait ",
 			st->st_state->name);
-		lswlog_deltatime(buf, rt->delay);
+		jam_deltatime(buf, rt->delay);
 		lswlogs(buf, " seconds for response");
 	}
 	return RETRANSMIT_YES;
@@ -287,28 +276,19 @@ void suppress_retransmits(struct state *st)
 {
 	retransmit_t *rt = &st->st_retransmit;
 	if (rt->limit == 0) {
-		LSWDBGP(DBG_CONTROL, buf) {
-			lswlog_retransmit_prefix(buf, st);
-			lswlogs(buf, "no retransmits to suppress");
-		}
+		dbg_retransmit(st, "no retransmits to suppress");
 		return;
 	}
 
 	monotime_t now = mononow();
-	rt->delay = monotimediff(monotimesum(rt->start, rt->timeout), now);
+	rt->delay = monotimediff(monotime_add(rt->start, rt->timeout), now);
 	rt->delays = deltatime_add(rt->delays, rt->delay);
-	/*
-	 * XXX: Can't call delete_event() because that calls
-	 * clear_retransmits().  However, got to wonder why
-	 * event_schedule() doesn't just wipe the old event
-	 * automatically?
-	 */
-	delete_pluto_event(&st->st_event);
+	event_delete(EVENT_RETRANSMIT, st);
 	event_schedule(EVENT_RETRANSMIT, rt->delay, st);
 	LSWLOG_RC(RC_RETRANSMISSION, buf) {
 		lswlogf(buf, "%s: suppressing retransmits; will wait ",
 			st->st_state->name);
-		lswlog_deltatime(buf, rt->delay);
+		jam_deltatime(buf, rt->delay);
 		lswlogs(buf, " seconds for retry");
 	}
 }

@@ -38,9 +38,9 @@ Received 0 response(s)
 west #
  ipsec auto --ready
 002 listening for IKE messages
-002 adding interface eth1 192.1.2.66:500
-002 adding interface eth1 192.1.2.66:4500
-003 two interfaces match "west-float" (eth1, eth1)
+002 adding UDP interface eth1 192.1.2.66:500
+002 adding UDP interface eth1 192.1.2.66:4500
+003 two interfaces match "west-float" (eth1 192.1.2.66, eth1 192.1.2.45)
 002 "west-float": terminating SAs using this connection
 002 forgetting secrets
 002 loading secrets from "/etc/ipsec.secrets"
@@ -71,6 +71,7 @@ west #
 003 ERROR: "float-east" #4: send on eth1 from 192.1.2.66:500 to 192.1.2.23:500 using UDP failed in delete notify [...]
 002 "float-east" #3: deleting state (STATE_MAIN_I4) and sending notification
 003 ERROR: "float-east" #3: send on eth1 from 192.1.2.66:500 to 192.1.2.23:500 using UDP failed in delete notify [...]
+002 "float-east" #3: deleting IKE SA but connection is supposed to remain up; schedule EVENT_REVIVE_CONNS
 002 unroute-host output: RTNETLINK answers: Network is unreachable
 002 "float-east": terminating SAs using this connection
 002 forgetting secrets

@@ -9,6 +9,7 @@ s/^\[\s\+[0-9]\+.[0-9]\+\] /\[ 00.00] /
   / kauditd_printk_skb:/d
   / Netfilter messages via NETLINK/d
   / IPsec XFRM device driver/d
+  / used greatest stack depth: [0-9]* bytes left/d
 }
 
 # XXX: how many of these are still generated?
@@ -105,6 +106,7 @@ s/none on \/usr\/obj type hostfs (ro,.*)/none on \/usr\/obj type hostfs (ro, PAT
 /^.*NET: Registered protocol family .*$/d
 /^.*NET: Unregistered protocol family 15$/d
 /^.*IPv4 over IPsec tunneling driver.*$/d
+/^.*tun: Universal TUN.*$/d
 /^.*PPP generic driver version.*$/d
 /^.*PPP BSD Compression module registered$/d
 /^.*PPP Deflate Compression module registered$/d

@@ -149,39 +149,6 @@ void list_psks(struct fd *whackfd)
 	lsw_foreach_secret(pluto_secrets, print_secrets, whackfd);
 }
 
-enum PrivateKeyKind nss_cert_key_kind(CERTCertificate *cert)
-{
-	if (!pexpect(cert != NULL)) {
-		return PKK_INVALID;
-	}
-
-	SECKEYPublicKey *pk = SECKEY_ExtractPublicKey(&cert->subjectPublicKeyInfo);
-	if (pk == NULL) {
-		LSWLOG(buf) {
-			lswlogs(buf, "NSS: could not determine certificate kind; SECKEY_ExtractPublicKey() returned");
-			lswlog_nss_error(buf);
-		}
-		return PKK_INVALID;
-	}
-
-	KeyType type = SECKEY_GetPublicKeyType(pk);
-	enum PrivateKeyKind kind;
-	switch (type) {
-	case rsaKey:
-		kind = PKK_RSA;
-		break;
-	case ecKey:
-		kind = PKK_ECDSA;
-		break;
-	default:
-		kind = PKK_INVALID;
-		break;
-	}
-
-	SECKEY_DestroyPublicKey(pk);
-	return kind;
-}
-
 err_t RSA_signature_verify_nss(const struct RSA_public_key *k,
 			       const struct crypt_mac *expected_hash,
 			       const uint8_t *sig_val, size_t sig_len,
@@ -371,7 +338,7 @@ static bool take_a_crack(struct tac_state *s,
 		    kr->type->name, key_id_str, story);
 		return true;
 	} else {
-		dbg("an %s Sig check failed '%s' with *%s [%s]",
+		loglog(RC_LOG_SERIOUS, "an %s Sig check failed '%s' with *%s [%s]",
 		    kr->type->name, ugh + 1, key_id_str, story);
 		if (s->best_ugh == NULL || s->best_ugh[0] < ugh[0])
 			s->best_ugh = ugh;
@@ -543,36 +510,23 @@ stf_status check_signature_gen(struct state *st,
  */
 static struct secret *lsw_get_secret(const struct connection *c,
 				     enum PrivateKeyKind kind,
-				     bool asym)
+				     bool asym, struct logger *logger)
 {
 	/* is there a certificate assigned to this connection? */
 	if ((kind == PKK_ECDSA || kind == PKK_RSA) &&
 	    c->spd.this.cert.ty == CERT_X509_SIGNATURE &&
 	    c->spd.this.cert.u.nss_cert != NULL) {
 
-		if (DBGP(DBG_BASE)) {
-			id_buf this_buf, that_buf;
-			DBG_log("%s() using certificate for %s->%s of kind %s",
-				__func__,
-				str_id(&c->spd.this.id, &this_buf),
-				str_id(&c->spd.that.id, &that_buf),
-				enum_name(&pkk_names, kind));
-		}
+		id_buf this_buf, that_buf;
+		dbg("%s() using certificate for %s->%s of kind %s",
+		    __func__,
+		    str_id(&c->spd.this.id, &this_buf),
+		    str_id(&c->spd.that.id, &that_buf),
+		    enum_name(&pkk_names, kind));
 
 		dbg("allocating public key using connection's certificate; only to throw it a way");
 		/* from here on: must free my_public_key */
-		struct pubkey *my_public_key;
-		switch (kind) {
-		case PKK_RSA:
-			my_public_key = allocate_RSA_public_key_nss(c->spd.this.cert.u.nss_cert);
-			break;
-		case PKK_ECDSA:
-			my_public_key = allocate_ECDSA_public_key_nss(c->spd.this.cert.u.nss_cert);
-			break;
-		default:
-			bad_case(kind);
-		}
-
+		struct pubkey *my_public_key = allocate_pubkey_nss(c->spd.this.cert.u.nss_cert, logger);
 		if (my_public_key == NULL) {
 			loglog(RC_LOG_SERIOUS, "private key not found (certificate missing from NSS DB or token locked?)");
 			return NULL;
@@ -630,23 +584,19 @@ static struct secret *lsw_get_secret(const struct connection *c,
 		rw_id.kind = addrtypeof(&c->spd.that.host_addr) == AF_INET ?
 			     ID_IPV4_ADDR : ID_IPV6_ADDR;
 		rw_id.ip_addr = address_any(address_type(&c->spd.that.host_addr));
-		if (DBGP(DBG_BASE)) {
-			id_buf old_buf, new_buf;
-			DBG_log("%s() switching remote roadwarrier ID from %s to %s (%%ANYADDR)",
-				__func__, str_id(that_id, &old_buf), str_id(&rw_id, &new_buf));
-		}
+		id_buf old_buf, new_buf;
+		dbg("%s() switching remote roadwarrier ID from %s to %s (%%ANYADDR)",
+		    __func__, str_id(that_id, &old_buf), str_id(&rw_id, &new_buf));
 		that_id = &rw_id;
 
 	}
 
-	if (DBGP(DBG_BASE)) {
-		id_buf this_buf, that_buf;
-		DBG_log("%s() using IDs for %s->%s of kind %s",
-			__func__,
-			str_id(this_id, &this_buf),
-			str_id(that_id, &that_buf),
-			enum_name(&pkk_names, kind));
-	}
+	id_buf this_buf, that_buf;
+	dbg("%s() using IDs for %s->%s of kind %s",
+	    __func__,
+	    str_id(this_id, &this_buf),
+	    str_id(that_id, &that_buf),
+	    enum_name(&pkk_names, kind));
 
 	return lsw_find_secret_by_id(pluto_secrets,
 				     kind,
@@ -660,9 +610,7 @@ struct secret *lsw_get_xauthsecret(char *xauthname)
 {
 	struct secret *best = NULL;
 
-	DBG(DBG_CONTROL,
-	    DBG_log("started looking for xauth secret for %s",
-		    xauthname));
+	dbg("started looking for xauth secret for %s", xauthname);
 
 	struct id xa_id = {
 		.kind = ID_FQDN,
@@ -691,14 +639,15 @@ static bool has_private_rawkey(struct pubkey *pk)
  * Note: the result is not to be freed by the caller.
  * Note2: this seems to be called for connections using RSA too?
  */
-const chunk_t *get_psk(const struct connection *c)
+const chunk_t *get_psk(const struct connection *c,
+		       struct logger *logger)
 {
 	if (c->policy & POLICY_AUTH_NULL) {
 		DBG(DBG_CRYPT, DBG_log("Mutual AUTH_NULL secret - returning empty_chunk"));
 		return &empty_chunk;
 	}
 
-	struct secret *s = lsw_get_secret(c, PKK_PSK, FALSE);
+	struct secret *s = lsw_get_secret(c, PKK_PSK, FALSE, logger);
 	const chunk_t *psk =
 		s == NULL ? NULL : &lsw_get_pks(s)->u.preshared_secret;
 
@@ -707,7 +656,7 @@ const chunk_t *get_psk(const struct connection *c)
 			DBG_dump_hunk("PreShared Key", *psk);
 		});
 	} else {
-		DBG(DBG_CONTROL, DBG_log("no PreShared Key Found"));
+		dbg("no PreShared Key Found");
 	}
 	return psk;
 }
@@ -715,9 +664,10 @@ const chunk_t *get_psk(const struct connection *c)
 
 /* Return ppk and store ppk_id in *ppk_id */
 
-chunk_t *get_ppk(const struct connection *c, chunk_t **ppk_id)
+chunk_t *get_ppk(const struct connection *c, chunk_t **ppk_id,
+		 struct logger *logger)
 {
-	struct secret *s = lsw_get_secret(c, PKK_PPK, FALSE);
+	struct secret *s = lsw_get_secret(c, PKK_PPK, FALSE, logger);
 
 	if (s == NULL) {
 		*ppk_id = NULL;
@@ -750,9 +700,7 @@ const chunk_t *get_ppk_by_id(const chunk_t *ppk_id)
 		});
 		return &pks->ppk;
 	}
-	DBG(DBG_CONTROL, {
-		DBG_log("No PPK found with given PPK_ID");
-	});
+	dbg("No PPK found with given PPK_ID");
 	return NULL;
 }
 
@@ -762,9 +710,10 @@ const chunk_t *get_ppk_by_id(const chunk_t *ppk_id)
  */
 
 const struct private_key_stuff *get_connection_private_key(const struct connection *c,
-							   const struct pubkey_type *type)
+							   const struct pubkey_type *type,
+							   struct logger *logger)
 {
-	struct secret *s = lsw_get_secret(c, type->private_key_kind, TRUE);
+	struct secret *s = lsw_get_secret(c, type->private_key_kind, TRUE, logger);
 	if (s == NULL) {
 		dbg("no %s private key Found", type->name);
 		return NULL;
@@ -931,7 +880,7 @@ static bool rsa_pubkey_ckaid_matches(struct pubkey *pubkey, char *buf, size_t bu
 		dbg("RSA pubkey incomputable CKAID");
 		return FALSE;
 	}
-	LSWDBGP(DBG_CONTROL, buf) {
+	LSWDBGP(DBG_BASE, buf) {
 		lswlogs(buf, "comparing ckaid with: ");
 		lswlog_nss_secitem(buf, pubkey_ckaid);
 	}
@@ -953,8 +902,9 @@ struct pubkey *get_pubkey_with_matching_ckaid(const char *ckaid)
 		libreswan_log("invalid hex CKAID '%s': %s", ckaid, ugh);
 		return NULL;
 	}
-	DBG(DBG_CONTROL,
-	    DBG_dump("looking for pubkey with CKAID that matches", bin, binlen));
+	if (DBGP(DBG_BASE)) {
+		DBG_dump("looking for pubkey with CKAID that matches", bin, binlen);
+	}
 
 	struct pubkey_list *p;
 	for (p = pluto_pubkeys; p != NULL; p = p->next) {

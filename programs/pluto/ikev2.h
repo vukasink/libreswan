@@ -43,11 +43,9 @@ extern void complete_v2_state_transition(struct state *st,
 					 struct msg_digest *mdp,
 					 stf_status result);
 
-extern stf_status ikev2_send_livenss_probe(struct state *st);
-
 typedef stf_status ikev2_state_transition_fn(struct ike_sa *ike,
 					     struct child_sa *child, /* could be NULL */
-					     struct msg_digest *md);
+					     struct msg_digest *md /* could be NULL */);
 
 extern ikev2_state_transition_fn process_encrypted_informational_ikev2;
 
@@ -57,7 +55,6 @@ extern ikev2_state_transition_fn ikev2_child_inR;
 extern ikev2_state_transition_fn ikev2_child_inIoutR;
 
 extern ikev2_state_transition_fn ikev2_parent_inI1outR1;
-extern ikev2_state_transition_fn ikev2_IKE_SA_process_SA_INIT_response_notification;
 extern ikev2_state_transition_fn ikev2_auth_initiator_process_failure_notification;
 extern ikev2_state_transition_fn ikev2_auth_initiator_process_unknown_notification;
 extern ikev2_state_transition_fn ikev2_ike_sa_process_auth_request_no_skeyid;
@@ -65,30 +62,23 @@ extern ikev2_state_transition_fn ikev2_ike_sa_process_auth_request;
 extern ikev2_state_transition_fn ikev2_parent_inR1outI2;
 extern ikev2_state_transition_fn ikev2_parent_inR2;
 
+void schedule_reinitiate_v2_ike_sa_init(struct ike_sa *ike,
+					stf_status (*resume)(struct ike_sa *ike));
+
+bool record_v2_IKE_SA_INIT_request(struct ike_sa *ike);
+extern ikev2_state_transition_fn process_IKE_SA_INIT_v2N_INVALID_KE_PAYLOAD_response;
+
 extern void ikev2_initiate_child_sa(struct pending *p);
 
 void ikev2_rekey_ike_start(struct ike_sa *ike);
 
 extern void ikev2_child_outI(struct state *st);
 
-extern v2_notification_t accept_v2_nonce(struct msg_digest *md, chunk_t *dest,
-		const char *name);
-
 extern stf_status ikev2_parent_inI2outR2_id_tail(struct msg_digest * md);
 
 /* MAGIC: perform f, a function that returns notification_t
  * and return from the ENCLOSING stf_status returning function if it fails.
  */
-/* ??? why are there so many copies of this routine (ikev2.h, ikev1_continuations.h, ipsec_doi.c).
- * Sometimes more than one copy is defined!
- */
-#define v2RETURN_STF_FAILURE(f) { \
-	v2_notification_t res = (f); \
-	if (res != v2N_NOTHING_WRONG) { \
-		  return STF_FAIL + res; \
-	} \
-}
-
 /* macro that returns STF_STATUS on failure */
 #define RETURN_STF_FAILURE_STATUS(f) { \
 	stf_status res = (f); \
@@ -164,18 +154,10 @@ extern bool ikev2_decode_peer_id(struct msg_digest *md);
 extern void ikev2_log_parentSA(const struct state *st);
 
 extern bool ikev2_calculate_rsa_hash(struct ike_sa *ike,
-				     enum original_role role,
 				     const struct crypt_mac *idhash,
 				     pb_stream *a_pbs,
 				     chunk_t *no_ppk_auth /* optional output */,
 				     const struct hash_desc *hash_algo);
-
-extern bool ikev2_calculate_ecdsa_hash(struct ike_sa *ike,
-				       enum original_role role,
-				       const struct crypt_mac *idhash,
-				       pb_stream *a_pbs,
-				       chunk_t *no_ppk_auth /* optional output */,
-				       const struct hash_desc *hash_algo);
 
 extern bool ikev2_emit_psk_auth(enum keyword_authby authby,
 				const struct ike_sa *ike,
@@ -188,13 +170,11 @@ extern bool ikev2_create_psk_auth(enum keyword_authby authby,
 				  chunk_t *additional_auth /* output */);
 
 extern stf_status ikev2_verify_rsa_hash(struct ike_sa *ike,
-					enum original_role role,
 					const struct crypt_mac *idhash,
 					pb_stream *sig_pbs,
 					const struct hash_desc *hash_algo);
 
 extern stf_status ikev2_verify_ecdsa_hash(struct ike_sa *ike,
-					enum original_role role,
 					const struct crypt_mac *idhash,
 					pb_stream *sig_pbs,
 					const struct hash_desc *hash_algo);
@@ -242,17 +222,19 @@ struct state_v2_microcode {
 	const enum state_kind state;
 	const enum state_kind next_state;
 	const enum isakmp_xchg_types recv_type;
+	enum message_role recv_role;
 	const lset_t flags;
+
 	/*
 	 * During a successful state transition is an out going
 	 * message expected and, if so, is it a request or response.
 	 *
 	 * Old code had a simple flag (SMF2_SEND) and then tried to
-	 * reverse engineer this value from the incomming message.
+	 * reverse engineer this value from the incoming message.
 	 * While in theory possible, it didn't seem to go well.  For
 	 * instance, because the code didn't clearly differentiate
 	 * between a FAKE_MD (created because old code insisted on
-	 * there always being an incomming message) and a real request
+	 * there always being an incoming message) and a real request
 	 * or response it ended up trying to use STATE_KIND to figure
 	 * things out.  While perhaps it is possible to make all this
 	 * work, spelling it out seems clearer.
@@ -280,8 +262,8 @@ void ikev2_ike_sa_established(struct ike_sa *ike,
 
 struct ikev2_ipseckey_dns;
 
-extern stf_status ikev2_process_child_sa_pl(struct msg_digest *md,
-					    bool expect_accepted);
+extern stf_status ikev2_process_child_sa_pl(struct ike_sa *ike, struct child_sa *child,
+					    struct msg_digest *md, bool expect_accepted);
 
 extern bool emit_v2KE(chunk_t *g, const struct dh_desc *group, pb_stream *outs);
 

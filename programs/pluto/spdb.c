@@ -29,8 +29,6 @@
 #include <netinet/in.h>
 #include <arpa/inet.h>
 
-#include "libreswan/pfkeyv2.h"
-
 #include "sysdep.h"
 #include "constants.h"
 #include "lswlog.h"
@@ -63,7 +61,7 @@
  *
  * XAUTH overloads the RSA/PSK types with four more types that
  * mean RSA or PSK, but also include whether one is negotiating
- * that the inititator will be the XAUTH client, or the responder will be
+ * that the initiator will be the XAUTH client, or the responder will be
  * XAUTH client. It seems unusual that the responder would be the one
  * to undergo XAUTH, since usually it is a roadwarrior to a gateway,
  * however, the gateway may decide it needs to do a new phase 1, for

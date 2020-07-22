@@ -39,8 +39,8 @@
 #include "demux.h"
 #include "pluto_stats.h"
 #include "ip_endpoint.h"
+#include "ip_sockaddr.h"
 #include "ip_protocol.h"
-#include "iface_udp.h"
 #include "iface.h"
 
 /* send_ike_msg logic is broken into layers.
@@ -110,8 +110,14 @@ bool send_chunks(const char *where, bool just_a_keepalive,
 		return FALSE;
 	}
 
+	/*
+	 * If we are doing NATT, so that the other end doesn't mistake
+	 * this message for ESP, each message needs a non-ESP_Marker
+	 * prefix.  natt_bonus is the size of the addition (0 if not
+	 * needed).
+	 */
 	natt_bonus = !just_a_keepalive &&
-				  interface->ike_float ?
+				  interface->esp_encapsulation_enabled ?
 				  NON_ESP_MARKER_SIZE : 0;
 
 	const uint8_t *ptr;
@@ -184,9 +190,8 @@ bool send_chunks(const char *where, bool just_a_keepalive,
 			str_endpoint(&interface->local_endpoint, &ib),
 			str_endpoint(&remote_endpoint, &b));
 
-		ip_sockaddr remote_sa;
-		size_t remote_sa_size = endpoint_to_sockaddr(&remote_endpoint, &remote_sa);
-		wlen = sendto(interface->fd, ptr, len, 0, &remote_sa.sa, remote_sa_size);
+		ip_sockaddr remote_sa = sockaddr_from_endpoint(&remote_endpoint);
+		wlen = sendto(interface->fd, ptr, len, 0, &remote_sa.sa.sa, remote_sa.len);
 		if (wlen != (ssize_t)len) {
 			if (!just_a_keepalive) {
 				LOG_ERRNO(errno,
@@ -227,15 +232,6 @@ bool send_ike_msg_without_recording(struct state *st, pb_stream *pbs,
 				    const char *where)
 {
 	return send_chunk_using_state(st, where, same_out_pbs_as_chunk(pbs));
-}
-
-void record_outbound_ike_msg(struct state *st, pb_stream *pbs, const char *what)
-{
-	passert(pbs_offset(pbs) != 0);
-	release_fragments(st);
-	free_chunk_content(&st->st_tpacket);
-	st->st_tpacket = clone_out_pbs_as_chunk(pbs, what);
-	st->st_last_liveness = mononow();
 }
 
 /*

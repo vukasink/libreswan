@@ -54,9 +54,9 @@ BuildRequires: libseccomp-devel
 BuildRequires: libselinux-devel
 BuildRequires: nspr-devel
 BuildRequires: nss-devel >= %{nss_version}
+BuildRequires: nss-tools
 BuildRequires: openldap-devel
 BuildRequires: pam-devel
-BuildRequires: pkgconfig
 BuildRequires: pkgconfig
 BuildRequires: redhat-rpm-config
 BuildRequires: systemd-devel
@@ -119,7 +119,7 @@ make %{?_smp_mflags} \
 %if 0%{with_efence}
     USE_EFENCE=true \
 %endif
-    WERROR_CFLAGS="-Werror -Wno-missing-field-initializers" \
+    WERROR_CFLAGS="-Werror -Wno-missing-field-initializers -Wno-error=address" \
     USERLINK="%{?__global_ldflags}" \
     %{libreswan_config} \
     programs
@@ -181,6 +181,18 @@ export NSS_DISABLE_HW_GCM=1
 %{buildroot}%{_libexecdir}/ipsec/cavp -v1psk ikev1_psk.fax | \
     diff -u ikev1_psk.fax - > /dev/null
 : CAVS tests passed
+
+# Some of these tests will show ERROR for negative testing - it will exit on real errors
+%{buildroot}%{_libexecdir}/ipsec/algparse -tp || { echo prooposal test failed; exit 1; }
+%{buildroot}%{_libexecdir}/ipsec/algparse -ta || { echo algorithm test failed; exit 1; }
+: Algorithm parser tests passed
+
+# self test for pluto daemon - this also shows which algorithms it allows in FIPS mode
+tmpdir=$(mktemp -d /tmp/libreswan-XXXXX)
+certutil -N -d sql:$tmpdir --empty-password
+%{buildroot}%{_libexecdir}/ipsec/pluto --selftest --nssdir $tmpdir --rundir $tmpdir
+: pluto self-test passed - verify FIPS algorithms allowed is still compliant with NIST
+
 %endif
 
 %post

@@ -57,7 +57,9 @@ extern const monotime_t monotime_epoch;
 bool is_monotime_epoch(monotime_t t);
 
 monotime_t mononow(void);
-monotime_t monotimesum(monotime_t t, deltatime_t d);
+monotime_t monotime_add(monotime_t t, deltatime_t d);
+monotime_t monotime_sub(monotime_t t, deltatime_t d);
+bool monotime_eq(monotime_t a, monotime_t b);
 bool monobefore(monotime_t a, monotime_t b);
 deltatime_t monotimediff(monotime_t a, monotime_t b);
 intmax_t monosecs(monotime_t m);
@@ -73,6 +75,5 @@ typedef struct {
 
 const char *str_monotime(monotime_t d, monotime_buf *buf);
 size_t jam_monotime(jambuf_t *buf, monotime_t d);
-#define lswlog_monotime jam_monotime /* XXX: TBD */
 
 #endif

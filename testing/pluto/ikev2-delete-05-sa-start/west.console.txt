@@ -15,7 +15,7 @@ west #
 west #
  # ensure that clear text does not get through
 west #
- iptables -A INPUT -i eth1 -m policy --dir in --pol none -s 192.0.2.0/24 -j LOGDROP
+ iptables -A INPUT -i eth1 -m policy --dir in --pol none -s 192.0.2.0/24 -j DROP
 west #
  iptables -I INPUT -m policy --dir in --pol ipsec -j ACCEPT
 west #
@@ -33,9 +33,9 @@ west #
 west #
  ipsec auto --down westnet-eastnet-auto
 002 "westnet-eastnet-auto": terminating SAs using this connection
-002 "westnet-eastnet-auto" #2: deleting state (STATE_V2_IPSEC_R) and sending notification
+002 "westnet-eastnet-auto" #2: deleting state (STATE_V2_ESTABLISHED_CHILD_SA) and sending notification
 005 "westnet-eastnet-auto" #2: ESP traffic information: in=84B out=84B
-002 "westnet-eastnet-auto" #1: deleting state (STATE_PARENT_R2) and sending notification
+002 "westnet-eastnet-auto" #1: deleting state (STATE_V2_ESTABLISHED_IKE_SA) and sending notification
 west #
  # give Delete/Notify some time; traffic counters on the new IPsec SA
 west #

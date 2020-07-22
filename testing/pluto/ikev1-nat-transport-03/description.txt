@@ -1,0 +1,6 @@
+Basic pluto test of transport mode through NAT, using IKEv1
+
+As ikev1-nat-transport-02 but now with two clients behind the same NAT
+
+NOTE: This shows a problem on east, which overwrites the 1st ip xfrm
+policy.

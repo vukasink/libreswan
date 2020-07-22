@@ -163,10 +163,10 @@ struct kernel_sa {
 
 	int outif;
 	IPsecSAref_t ref;
-	IPsecSAref_t refhim;
+	IPsecSAref_t ref_peer;
 
 	int mode;		/* transport or tunnel */
-	uint8_t encap_type;	/* TCP or UDP */
+	const struct ip_encap *encap_type;		/* ESP in TCP or UDP; or NULL */
 	ip_address *natt_oa;
 	const char *text_said;
 	struct xfrm_user_sec_ctx_ike *sec_ctx;
@@ -193,7 +193,6 @@ extern char *pluto_listen;	/* from --listen flag */
 struct kernel_ops {
 	enum kernel_interface type;
 	const char *kern_name;
-	bool inbound_eroute;
 	bool overlap_supported;
 	bool sha2_truncbug_support;
 	int replay_window;
@@ -201,9 +200,8 @@ struct kernel_ops {
 	int *route_fdp;
 
 	void (*init)(void);
-	void (*shutdown)(void);
+	void (*shutdown)();
 	void (*pfkey_register)(void);
-	void (*pfkey_register_response)(const struct sadb_msg *msg);
 	void (*process_queue)(void);
 	void (*process_msg)(int);
 	void (*scan_shunts)(void);
@@ -234,7 +232,7 @@ struct kernel_ops {
 	bool (*eroute_idle)(struct state *st, deltatime_t idle_max);	/* may mutate *st */
 	void (*remove_orphaned_holds)(int transportproto,
 				      const ip_subnet *ours,
-				      const ip_subnet *his);
+				      const ip_subnet *peers);
 	bool (*add_sa)(const struct kernel_sa *sa, bool replace);
 	bool (*grp_sa)(const struct kernel_sa *sa_outer,
 		       const struct kernel_sa *sa_inner);
@@ -275,15 +273,13 @@ extern int useful_mastno;
 #endif
 
 extern const struct kernel_ops *kernel_ops;
-extern const struct kernel_ops nokernel_kernel_ops;
-#ifdef NETKEY_SUPPORT
+#ifdef XFRM_SUPPORT
 extern const struct kernel_ops netkey_kernel_ops;
 #endif
 #ifdef BSD_KAME
 extern const struct kernel_ops bsdkame_kernel_ops;
 #endif
 
-extern struct raw_iface *find_raw_ifaces4(void);
 extern struct raw_iface *find_raw_ifaces6(void);
 
 /* helper for invoking call outs */
@@ -304,7 +300,7 @@ extern bool invoke_command(const char *verb, const char *verb_suffix,
 struct eroute_info {
 	unsigned long count;
 	ip_subnet ours;
-	ip_subnet his;
+	ip_subnet peers;
 	ip_address dst;
 	ip_said said;
 	int transport_proto;
@@ -332,32 +328,11 @@ struct eroute_info {
  */
 #define SHUNT_PATIENCE  (SHUNT_SCAN_INTERVAL * 15 / 2)  /* inactivity timeout */
 
-struct bare_shunt {
-	policy_prio_t policy_prio;
-	ip_subnet ours;
-	ip_subnet his;
-	ip_said said;
-	int transport_proto;
-	unsigned long count;
-	monotime_t last_activity;
-
-	/*
-	 * Note: "why" must be in stable storage (not auto, not heap)
-	 * because we use it indefinitely without copying or pfreeing.
-	 * Simple rule: use a string literal.
-	 */
-	const char *why;
-	/* the conncetion from where it came - used to re-load /32 conns */
-	char *from_cn;
-
-	struct bare_shunt *next;
-};
-
 extern void show_shunt_status(struct show *);
 extern unsigned shunt_count(void);
 
 struct bare_shunt **bare_shunt_ptr(const ip_subnet *ours,
-				   const ip_subnet *his,
+				   const ip_subnet *peers,
 				   int transport_proto);
 
 /* A netlink header defines EM_MAXRELSPIS, the max number of SAs in a group.
@@ -373,21 +348,18 @@ struct bare_shunt **bare_shunt_ptr(const ip_subnet *ours,
  * Simple rule: use a string literal.
  */
 struct xfrm_user_sec_ctx_ike; /* forward declaration of tag */
-extern void record_and_initiate_opportunistic(const ip_subnet *,
-					      const ip_subnet *,
-					      int transport_proto,
+extern void record_and_initiate_opportunistic(const ip_selector *our_client,
+					      const ip_selector *peer_client,
+					      unsigned transport_proto,
 					      struct xfrm_user_sec_ctx_ike *,
 					      const char *why);
 extern void init_kernel(void);
 
 struct connection;      /* forward declaration of tag */
-extern bool trap_connection(struct connection *c);
+extern bool trap_connection(struct connection *c, struct fd *whackfd);
 extern void unroute_connection(struct connection *c);
 extern void migration_up(struct connection *c,  struct state *st);
 extern void migration_down(struct connection *c,  struct state *st);
-
-extern bool has_bare_hold(const ip_address *src, const ip_address *dst,
-			  int transport_proto);
 
 extern bool delete_bare_shunt(const ip_address *src, const ip_address *dst,
 			       int transport_proto, ipsec_spi_t shunt_spi,
@@ -454,7 +426,7 @@ static inline bool compatible_overlapping_connections(const struct connection *a
 	       LIN(POLICY_OVERLAPIP, a->policy & b->policy);
 }
 
-extern void show_kernel_interface(const struct fd *whackfd);
+extern void show_kernel_interface(struct show *s);
 extern void free_kernelfd(void);
 extern void expire_bare_shunts(void);
 
@@ -464,7 +436,7 @@ extern void expire_bare_shunts(void);
  * because we use it indefinitely without copying or pfreeing.
  * Simple rule: use a string literal.
  */
-extern void add_bare_shunt(const ip_subnet *ours, const ip_subnet *his,
+extern void add_bare_shunt(const ip_subnet *ours, const ip_subnet *peers,
 		int transport_proto, ipsec_spi_t shunt_spi,
 		const char *why);
 

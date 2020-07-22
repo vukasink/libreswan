@@ -55,16 +55,21 @@ typedef struct { struct timeval dt; } deltatime_t;
 deltatime_t deltatime(time_t secs);
 deltatime_t deltatime_ms(intmax_t ms);
 
+/* for monotime(a-b) and realtime(a-b) */
 deltatime_t deltatime_timevals_diff(struct timeval l, struct timeval r);
 
-/* sign(a - b) */
-int deltatime_cmp(deltatime_t a, deltatime_t b);
+/* sign(a - b); see timercmp() for hacks origin */
+int deltatime_cmp_sign(deltatime_t a, deltatime_t b);
+#define deltatime_cmp(A, OP, B) (deltatime_cmp_sign(A, B) OP 0)
 
 /* max(a, b) */
 deltatime_t deltatime_max(deltatime_t a, deltatime_t b);
 
 /* a+b */
 deltatime_t deltatime_add(deltatime_t a, deltatime_t b);
+
+/* a-b */
+deltatime_t deltatime_sub(deltatime_t a, deltatime_t b);
 
 /* a*s */
 deltatime_t deltatime_mulu(deltatime_t a, unsigned scalar);
@@ -75,11 +80,10 @@ deltatime_t deltatime_divu(deltatime_t a, unsigned scalar);
 intmax_t deltamillisecs(deltatime_t d);
 intmax_t deltasecs(deltatime_t d);
 deltatime_t deltatimescale(int num, int denom, deltatime_t d);
-bool deltaless(deltatime_t a, deltatime_t b);
-bool deltaless_tv_dt(const struct timeval a, const deltatime_t b);
 
-/* Convert to struct timeval. */
-struct timeval deltatimeval(deltatime_t);
+/* Convert to/from struct timeval - time used by libevent. */
+struct timeval timeval_from_deltatime(deltatime_t);
+deltatime_t deltatime_from_timeval(const struct timeval a);
 
 /* output as "smart" seconds */
 
@@ -90,16 +94,5 @@ typedef struct {
 
 const char *str_deltatime(deltatime_t d, deltatime_buf *buf);
 size_t jam_deltatime(jambuf_t *buf, deltatime_t d);
-#define lswlog_deltatime jam_deltatime /* XXX: TBD */
-
-/* jam_deltatime() */
-
-/*
- * legacy.
- */
-
-/* But what about -ve? */
-#define PRI_DELTATIME "%jd.%03jd"
-#define pri_deltatime(D) (deltamillisecs(D) / 1000), (deltamillisecs(D) % 1000)
 
 #endif

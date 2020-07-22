@@ -41,6 +41,40 @@
 #include "lswlog.h"
 
 /*
+ * Pack and unpack bytes
+ */
+
+static bool pack_raw(struct whackpacker *wp,
+		     void **bytes, size_t nr_bytes,
+		     const char *what)
+{
+	if (wp->str_next + nr_bytes > wp->str_roof)  {
+		DBGF(DBG_TMI, "%s: buffer overflow for '%s'",
+		    __func__, what);
+		return false; /* would overflow buffer */
+	}
+	memcpy(wp->str_next, *bytes, nr_bytes);
+	wp->str_next += nr_bytes;
+	return true;
+}
+
+static bool unpack_raw(struct whackpacker *wp,
+		       void **bytes, size_t nr_bytes,
+		       const char *what)
+{
+	uint8_t *end = wp->str_next + nr_bytes;
+	if (end > wp->str_roof) {
+		/* overflow */
+		DBGF(DBG_TMI, "%s: buffer overflow for '%s'; needing %zu bytes",
+		    __func__, what, nr_bytes);
+		return false;
+	}
+	*bytes = wp->str_next;
+	wp->str_next = end;
+	return true;
+}
+
+/*
  * Pack and unpack a memory hunks.
  *
  * Notes:
@@ -60,41 +94,26 @@
 			HUNK->ptr = NULL; /* be safe */			\
 			return true;					\
 		}							\
-									\
-		if ((WP)->str_next + HUNK->len > (WP)->str_roof)  {	\
-			dbg("%s: buffer overflow for '%s'",		\
-			    __func__, WHAT);				\
-			return false; /* would overflow buffer */	\
+		if (!pack_raw(WP, (void**)&(HUNK)->ptr,			\
+			      HUNK->len, WHAT)) {			\
+			return false;					\
 		}							\
-									\
-		memcpy((WP)->str_next, HUNK->ptr, HUNK->len);		\
-		(WP)->str_next += HUNK->len;				\
 		HUNK->ptr = NULL; /* kill pointer being sent on wire! */ \
 		return true;						\
 	}
 
 #define UNPACK_HUNK(WP, HUNK, WHAT)					\
 	{								\
-		dbg("%s: '%s' is %zu bytes",				\
-		    __func__, WHAT, HUNK->len);				\
-									\
 		if (HUNK->len == 0) {					\
 			/* expect wire-pointer to be NULL */		\
 			pexpect(HUNK->ptr == NULL);			\
 			HUNK->ptr = NULL;				\
 			return true;					\
 		}							\
-									\
-		uint8_t *end = (WP)->str_next + HUNK->len;		\
-		if (end > wp->str_roof) {				\
-			/* overflow */					\
-			dbg("%s: buffer overflow for '%s'; needing %zu bytes", \
-			    __func__, WHAT, HUNK->len);			\
+		if (!unpack_raw(WP, (void**)&(HUNK)->ptr,		\
+				HUNK->len, WHAT)) {			\
 			return false;					\
 		}							\
-									\
-		HUNK->ptr = (WP)->str_next;				\
-		(WP)->str_next = end;					\
 		return true;						\
 	}
 
@@ -138,7 +157,7 @@ static bool pack_string(struct whackpacker *wp, char **p, const char *what)
 	size_t len = strlen(s) + 1;
 
 	if (wp->str_roof - wp->str_next < (ptrdiff_t)len) {
-		dbg("%s: buffer overflow for '%s'",
+		DBGF(DBG_TMI, "%s: buffer overflow for '%s'",
 		    __func__, what);
 		return false; /* would overflow buffer */
 	}
@@ -156,14 +175,14 @@ static bool unpack_string(struct whackpacker *wp, char **p, const char *what)
 
 	uint8_t *end = memchr(wp->str_next, '\0', (wp->str_roof - wp->str_next) );
 	if (end == NULL) {
-		dbg("%s: buffer overflow for '%s'; missing NUL",
+		DBGF(DBG_TMI, "%s: buffer overflow for '%s'; missing NUL",
 		    __func__, what);
 		return false; /* fishy: no end found */
 	}
 
 	unsigned char *s = (wp->str_next == end ? NULL : wp->str_next);
 
-	dbg("%s: '%s' is %zu bytes", __func__, what, end - wp->str_next);
+	DBGF(DBG_TMI, "%s: '%s' is %zu bytes", __func__, what, end - wp->str_next);
 
 	*p = (char *)s;
 	wp->str_next = end + 1;
@@ -177,23 +196,27 @@ struct pickler {
 	bool (*string)(struct whackpacker *wp, char **p, const char *what);
 	bool (*shunk)(struct whackpacker *wp, shunk_t *s, const char *what);
 	bool (*chunk)(struct whackpacker *wp, chunk_t *s, const char *what);
+	bool (*raw)(struct whackpacker *wp, void **bytes, size_t nr_bytes, const char *what);
 };
 
 struct pickler pickle_packer = {
 	.string = pack_string,
 	.shunk = pack_shunk,
 	.chunk = pack_chunk,
+	.raw = pack_raw,
 };
 
 struct pickler pickle_unpacker = {
 	.string = unpack_string,
 	.shunk = unpack_shunk,
 	.chunk = unpack_chunk,
+	.raw = unpack_raw,
 };
 
 #define PICKLE_STRING(FIELD) pickle->string(wp, FIELD, #FIELD)
 #define PICKLE_CHUNK(FIELD) pickle->chunk(wp, FIELD, #FIELD)
 #define PICKLE_SHUNK(FIELD) pickle->shunk(wp, FIELD, #FIELD)
+#define PICKLE_THINGS(THINGS, NR) pickle->raw(wp, (void**)(THINGS), NR*sizeof((THINGS)[0][0]), #THINGS)
 
 static bool pickle_whack_end(struct whackpacker *wp, struct whack_end *end,
 			     struct pickler *pickle)
@@ -236,6 +259,7 @@ static bool pickle_whack_message(struct whackpacker *wp, struct pickler *pickle)
 		PICKLE_STRING(&wp->msg->redirect_to) &&
 		PICKLE_STRING(&wp->msg->accept_redirect_to) &&
 		PICKLE_CHUNK(&wp->msg->keyval) &&
+		PICKLE_THINGS(&wp->msg->impairments, wp->msg->nr_impairments) &&
 		true);
 }
 
@@ -280,9 +304,7 @@ err_t unpack_whack_msg(struct whackpacker *wp)
 void clear_end(struct whack_end *e)
 {
 	static const struct whack_end zero_end;	/* zeros and NULL pointers */
-
 	*e = zero_end;
-	e->host_port = IKE_UDP_PORT; /* XXX should really use ike_port ? */
 }
 
 int whack_get_value(char *buf, size_t bufsize)

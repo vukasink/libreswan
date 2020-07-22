@@ -75,18 +75,28 @@ intmax_t monosecs(monotime_t m)
 	return m.mt.tv_sec;
 }
 
-monotime_t monotimesum(monotime_t t, deltatime_t d)
+monotime_t monotime_add(monotime_t t, deltatime_t d)
 {
-	intmax_t d_ms = deltamillisecs(d);
-	struct timeval dt = { d_ms / 1000, d_ms % 1000 };
 	monotime_t s = MONOTIME_EPOCH;
-	timeradd(&t.mt, &dt, &s.mt);
+	timeradd(&t.mt, &d.dt, &s.mt);
+	return s;
+}
+
+monotime_t monotime_sub(monotime_t t, deltatime_t d)
+{
+	monotime_t s = MONOTIME_EPOCH;
+	timersub(&t.mt, &d.dt, &s.mt);
 	return s;
 }
 
 bool monobefore(monotime_t a, monotime_t b)
 {
 	return timercmp(&a.mt, &b.mt, <);
+}
+
+bool monotime_eq(monotime_t a, monotime_t b)
+{
+	return timercmp(&a.mt, &b.mt, ==);
 }
 
 deltatime_t monotimediff(monotime_t a, monotime_t b)
@@ -97,7 +107,7 @@ deltatime_t monotimediff(monotime_t a, monotime_t b)
 size_t jam_monotime(jambuf_t *buf, monotime_t m)
 {
 	/* convert it to time-since-epoch and log that */
-	return lswlog_deltatime(buf, monotimediff(m, monotime_epoch));
+	return jam_deltatime(buf, monotimediff(m, monotime_epoch));
 }
 
 const char *str_monotime(monotime_t m, monotime_buf *buf)

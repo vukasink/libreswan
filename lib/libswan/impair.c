@@ -63,11 +63,15 @@ struct impairment {
 	void *value;
 	/* size_t offsetof_value; */
 	size_t sizeof_value;
+	enum impair_action action;
+	unsigned param;
 };
 
 struct impairment impairments[] = {
 	{ .what = NULL, },
-#define V(WHAT, VALUE, HELP, ...) { .what = WHAT, .value = &impair.VALUE, .help = HELP, .sizeof_value = sizeof(impair.VALUE),##__VA_ARGS__, }
+
+#define A(WHAT, ACTION, PARAM, HELP, UNSIGNED_HELP, ...) { .what = WHAT, .action = CALL_##ACTION, .param = PARAM, .help = HELP, .unsigned_help = UNSIGNED_HELP, ##__VA_ARGS__, }
+#define V(WHAT, VALUE, HELP, ...) { .what = WHAT, .action = CALL_IMPAIR_UPDATE, .value = &impair.VALUE, .help = HELP, .sizeof_value = sizeof(impair.VALUE), ##__VA_ARGS__, }
 
 	V("add-unknown-payload-to-auth", add_unknown_payload_to_auth, "add a payload with an unknown type to AUTH"),
 	V("add-unknown-payload-to-auth-sk", add_unknown_payload_to_auth_sk, "add a payload with an unknown type to AUTH's SK payload"),
@@ -99,6 +103,10 @@ struct impairment impairments[] = {
 	V("minor-version-bump", minor_version_bump, "cause pluto to send an IKE minor version that's higher then we support."),
 	V("omit-hash-notify", omit_hash_notify_request, "causes pluto to omit sending hash notify in IKE_SA_INIT Request"),
 	V("proposal-parser", proposal_parser, "impair algorithm parser - what you see is what you get"),
+	V("rekey-initiate-supernet", rekey_initiate_supernet, "impair IPsec SA rekey initiator TSi and TSR to 0/0 ::0, emulate Windows client"),
+	V("rekey-initiate-subnet", rekey_initiate_subnet, "impair IPsec SA rekey initiator TSi and TSR to X/32 or X/128"),
+	V("rekey-respond-supernet", rekey_respond_supernet, "impair IPsec SA rekey responder TSi and TSR to 0/0 ::0"),
+	V("rekey-respond-subnet", rekey_respond_subnet, "impair IPsec SA rekey responder TSi and TSR to X/32 X/128"),
 	V("replay-backward", replay_backward, "replay all earlier packets new-to-old"),
 	V("replay-duplicates", replay_duplicates, "replay duplicates of each incoming packet"),
 	V("replay-encrypted", replay_encrypted, "replay encrypted packets"),
@@ -114,6 +122,8 @@ struct impairment impairments[] = {
 	V("send-no-main-r2", send_no_main_r2, "causes pluto to omit sending an last Main Mode response packet"),
 	V("send-no-xauth-r0", send_no_xauth_r0, "causes pluto to omit sending an XAUTH user/passwd request"),
 	V("send-pkcs7-thingie", send_pkcs7_thingie, "send certificates as a PKCS7 thingie"),
+	V("send-nonzero-reserved", send_nonzero_reserved, "send non-zero reserved fields in IKEv2 proposal fields"),
+	V("send-nonzero-reserved-id", send_nonzero_reserved_id, "send non-zero reserved fields in IKEv2 ID payload that is part of the AUTH hash calculation"),
 	V("suppress-retransmits", suppress_retransmits, "causes pluto to never send retransmits (wait the full timeout)"),
 	V("timeout-on-retransmit", timeout_on_retransmit, "causes pluto to 'retry' (switch protocol) on the first retransmit"),
 	V("unknown-payload-critical", unknown_payload_critical, "mark the unknown payload as critical"),
@@ -121,42 +131,44 @@ struct impairment impairments[] = {
 	V("v1-hash-exchange", v1_hash_exchange, "the outgoing exchange that should contain the corrupted HASH payload", .how_keynum = &exchange_impairment_keywords),
 	V("v1-hash-payload", v1_hash_payload, "corrupt the outgoing HASH payload", .how_keynum = &send_impairment_keywords, .unsigned_help = "fill the hash payload with <unsigned> bytes"),
 	V("tcp-use-blocking-write", tcp_use_blocking_write, "use a blocking write when sending TCP encapsulated IKE messages"),
+	V("tcp-skip-setsockopt-espintcp", tcp_skip_setsockopt_espintcp, "skip the required setsockopt(\"espintcp\") call"),
 
-#undef B
+	A("initiate-v2-liveness", INITIATE_v2_LIVENESS, 0, "initiate an IKEv2 liveness exchange", "IKE SA"),
+	A("initiate-v2-delete", INITIATE_v2_DELETE, 0, "initiate an IKEv2 delete exchange", "SA"),
+	A("initiate-v2-rekey", INITIATE_v2_REKEY, 0, "initiate an IKEv2 rekey using the CREATE_CHILD_SA exchange", "SA"),
+
+	A("send-keepalive", SEND_KEEPALIVE, 0, "send a NAT keepalive packet", "SA"),
+
+#undef V
+#undef A
 
 };
 
-static void help(const char *prefix, const struct impairment *cr)
+static void help(const char *prefix, const struct impairment *cr, FILE *file)
 {
-	LSWLOG_INFO(buf) {
-		jam(buf, "%s%s: %s", prefix, cr->what, cr->help);
-	}
+	fprintf(file, "%s%s: %s\n", prefix, cr->what, cr->help);
 	if (cr->how_keynum != NULL) {
 		const struct keywords *kw = cr->how_keynum;
 		/* skip 0, always no */
 		for (unsigned ki = 1; ki < kw->nr_values; ki++) {
 			const struct keyword *kv = &kw->values[ki];
 			if (kv->details != NULL) {
-				LSWLOG_INFO(buf) {
-					jam(buf, "%s  %s: %s", prefix,
-					    kv->sname, kv->details);
-				}
+				fprintf(file, "%s  %s: %s\n",
+					prefix, kv->sname, kv->details);
 			}
 		}
 	}
 	if (cr->unsigned_help != NULL) {
-		LSWLOG_INFO(buf) {
-			jam(buf, "%s  %s: %s", prefix,
-			    "<unsigned>", cr->unsigned_help);
-		}
+		fprintf(file, "%s  %s: %s\n",
+			prefix, "<unsigned>", cr->unsigned_help);
 	}
 }
 
-void help_impair(const char *prefix)
+static void help_impair(const char *prefix, FILE *file)
 {
 	for (unsigned ci = 1; ci < elemsof(impairments); ci++) {
 		const struct impairment *cr = &impairments[ci];
-		help(prefix, cr);
+		help(prefix, cr, file);
 	}
 }
 
@@ -180,21 +192,14 @@ static unsigned parse_biased_unsigned(shunk_t string, const struct impairment *c
 #define IMPAIR_DISABLE (elemsof(impairments) + 0)
 #define IMPAIR_LIST (elemsof(impairments) + 1)
 
-bool parse_impair(const char *optarg,
-		  struct whack_impair *whack_impair,
-		  bool enable /* --impair ... vs --no-impair ...*/)
+enum impair_status parse_impair(const char *optarg,
+				struct whack_impair *whack_impair,
+				bool enable /* --impair ... vs --no-impair ...*/,
+				const char *progname)
 {
 	if (streq(optarg, "help")) {
-		help_impair("");
-		return false;
-	}
-
-	if (whack_impair->what != 0) {
-		LSWLOG_ERROR(buf) {
-			lswlogf(buf, "ignoring second impair option: --%simpair %s",
-				enable ? "" : "no-", optarg);
-		}
-		return true;
+		help_impair("", stdout);
+		return IMPAIR_HELP;
 	}
 
 	if (enable && streq(optarg, "none")) {
@@ -202,7 +207,7 @@ bool parse_impair(const char *optarg,
 			.what = IMPAIR_DISABLE,
 			.how = 0,
 		};
-		return true;
+		return IMPAIR_OK;
 	}
 
 	if (enable && streq(optarg, "list")) {
@@ -210,7 +215,7 @@ bool parse_impair(const char *optarg,
 			.what = IMPAIR_LIST,
 			.how = 0,
 		};
-		return true;
+		return IMPAIR_OK;
 	}
 
 	/* Break OPTARG into WHAT[=HOW] */
@@ -233,11 +238,9 @@ bool parse_impair(const char *optarg,
 		}
 	}
 	if (cr == NULL) {
-		LSWLOG_ERROR(buf) {
-			jam(buf, "ignoring unrecognized impair option '"PRI_SHUNK"'",
-			    pri_shunk(what));
-		}
-		return false;
+		fprintf(stderr, "%s: unrecognized impair option '"PRI_SHUNK"'\n",
+			progname, pri_shunk(what));
+		return IMPAIR_ERROR;
 	}
 
 	/*
@@ -245,8 +248,8 @@ bool parse_impair(const char *optarg,
 	 */
 	if (hunk_strcaseeq(how, "help") ||
 	    hunk_strcaseeq(how, "?")) {
-		help("", cr);
-		return false;
+		help("", cr, stdout);
+		return IMPAIR_HELP;
 	}
 
 	/*
@@ -254,11 +257,9 @@ bool parse_impair(const char *optarg,
 	 * instance: --no-impair no-foo:bar.
 	 */
 	if ((!enable + what_no + (how.ptr != NULL)) > 1) {
-		LSWLOG_ERROR(buf) {
-			jam(buf, "ignoring overly negative --%simpair %s",
-			    enable ? "" : "no-", optarg);
-		}
-		return false;
+		fprintf(stderr, "%s overly negative --%simpair %s",
+			progname, enable ? "" : "no-", optarg);
+		return IMPAIR_ERROR;
 	}
 
 	/*
@@ -269,7 +270,7 @@ bool parse_impair(const char *optarg,
 			.what = ci,
 			.how = 0,
 		};
-		return true;
+		return IMPAIR_OK;
 	}
 
 	/*
@@ -283,7 +284,7 @@ bool parse_impair(const char *optarg,
 				.what = ci,
 				.how = kw->value,
 			};
-			return true;
+			return IMPAIR_OK;
 		}
 	} else {
 		/*
@@ -299,7 +300,7 @@ bool parse_impair(const char *optarg,
 				.what = ci,
 				.how = false,
 			};
-			return true;
+			return IMPAIR_OK;
 		}
 
 		if (how.len == 0 || hunk_strcaseeq(how, "yes")) {
@@ -308,7 +309,7 @@ bool parse_impair(const char *optarg,
 				.what = ci,
 				.how = true,
 			};
-			return true;
+			return IMPAIR_OK;
 		}
 	}
 
@@ -319,15 +320,13 @@ bool parse_impair(const char *optarg,
 				.what = ci,
 				.how = biased_value,
 			};
-			return true;
+			return IMPAIR_OK;
 		}
 	}
 
-	LSWLOG_ERROR(buf) {
-		jam(buf, "ignoring impair option '"PRI_SHUNK"' with unrecognized parameter '"PRI_SHUNK"' (%s)",
-		    pri_shunk(what), pri_shunk(how), optarg);
-	}
-	return false;
+fprintf(stderr, "%s: ignoring impair option '"PRI_SHUNK"' with unrecognized parameter '"PRI_SHUNK"' (%s)",
+	progname, pri_shunk(what), pri_shunk(how), optarg);
+	return IMPAIR_ERROR;
 }
 
 /*
@@ -383,7 +382,8 @@ bool have_impairments(void)
 	/* is there anything enabled? */
 	for (unsigned ci = 1; ci < elemsof(impairments); ci++) {
 		const struct impairment *cr = &impairments[ci];
-		if (value_of(cr) != 0) {
+		if (cr->action == CALL_IMPAIR_UPDATE &&
+		    value_of(cr) != 0) {
 			return true;
 		}
 	}
@@ -395,63 +395,86 @@ void jam_impairments(jambuf_t *buf, const char *sep)
 	const char *s = "";
 	for (unsigned ci = 1; ci < elemsof(impairments); ci++) {
 		const struct impairment *cr = &impairments[ci];
-		if (value_of(cr) != 0) {
+		if (cr->action == CALL_IMPAIR_UPDATE &&
+		    value_of(cr) != 0) {
 			jam_string(buf, s); s = sep;
 			jam_impairment(buf, cr);
 		}
 	}
 }
 
-void process_impair(const struct whack_impair *wc)
+bool process_impair(const struct whack_impair *wc,
+		    void (*action)(enum impair_action, unsigned param,
+				   unsigned update, bool background,
+				   struct fd *whackfd),
+		    bool background, struct fd *whackfd,
+		    struct logger *logger)
 {
 	if (wc->what == 0) {
 		/* ignore; silently */
-		return;
+		return true;
 	} else if (wc->what == IMPAIR_DISABLE) {
 		for (unsigned ci = 1; ci < elemsof(impairments); ci++) {
 			const struct impairment *cr = &impairments[ci];
-			if (value_of(cr) != 0) {
-				LSWDBGP(DBG_BASE, buf) {
-					lswlogf(buf, "%s: ", cr->what);
-					lswlogs(buf, " disabled");
-				}
+			if (cr->action == CALL_IMPAIR_UPDATE &&
+			    value_of(cr) != 0) {
+				dbg("%s: disabled", cr->what);
 				memset(cr->value, 0, cr->sizeof_value);
 			}
 		}
-		return;
+		return true;
 	} else if (wc->what == IMPAIR_LIST) {
 		for (unsigned ci = 1; ci < elemsof(impairments); ci++) {
 			const struct impairment *cr = &impairments[ci];
-			if (value_of(cr) != 0) {
-				/* XXX: should be whack log? */
-				LSWLOG_INFO(buf) {
+			if (cr->action == CALL_IMPAIR_UPDATE &&
+			    value_of(cr) != 0) {
+				LOG_MESSAGE(RC_COMMENT, logger, buf) {
 					jam_impairment(buf, cr);
 				}
 			}
 		}
-		return;
+		return true;
 	} else if (wc->what >= elemsof(impairments)) {
-		LSWLOG_ERROR(buf) {
-			lswlogf(buf, "impairment %u out-of-range",
-				wc->what);
-		}
-		return;
+		log_message(RC_LOG|ERROR_STREAM, logger,
+			    "impairment %u out-of-range", wc->what);
+		return false;
 	}
 	const struct impairment *cr = &impairments[wc->what];
-	/* do not un-bias */
-	switch (cr->sizeof_value) {
+	switch (cr->action) {
+	case CALL_IMPAIR_UPDATE:
+		/* do not un-bias */
+		switch (cr->sizeof_value) {
 #define L(T) case sizeof(uint##T##_t): *(uint##T##_t*)cr->value = wc->how; break;
-		L(8);
-		L(16);
-		L(32);
-		L(64);
+			L(8);
+			L(16);
+			L(32);
+			L(64);
 #undef L
-	default:
-		bad_case(cr->sizeof_value);
+		default:
+			bad_case(cr->sizeof_value);
+		}
+		/* log the update */
+		LOG_MESSAGE(DEBUG_STREAM, logger, buf) {
+			jam_impairment(buf, cr);
+		}
+		return true;
+	case CALL_INITIATE_v2_DELETE:
+	case CALL_INITIATE_v2_LIVENESS:
+	case CALL_INITIATE_v2_REKEY:
+	case CALL_SEND_KEEPALIVE:
+	case CALL_GLOBAL_EVENT:
+	case CALL_STATE_EVENT:
+		/* how is always biased */
+		if (action == NULL) {
+			log_message(RC_LOG|DEBUG_STREAM, logger,
+				    "no action for impairment %s", cr->what);
+			return false;
+		}
+		action(cr->action, cr->param, wc->how, background, whackfd);
+		return true;
 	}
-	LSWDBGP(DBG_BASE, buf) {
-		jam_impairment(buf, cr);
-	}
+	/* not inside case */
+	bad_case(cr->action);
 }
 
 /*

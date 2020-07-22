@@ -180,12 +180,12 @@ static void ipsecconf_default_values(struct starter_config *cfg)
 	d->sighash_policy =
 		POL_SIGHASH_SHA2_256 | POL_SIGHASH_SHA2_384 | POL_SIGHASH_SHA2_512;
 
-	d->left.addr_family = AF_INET;
+	d->left.host_family = &ipv4_info;
 	d->left.addr = address_any(&ipv4_info);
 	d->left.nexttype = KH_NOTSET;
 	d->left.nexthop = address_any(&ipv4_info);
 
-	d->right.addr_family = AF_INET;
+	d->right.host_family = &ipv4_info;
 	d->right.addr = address_any(&ipv4_info);
 	d->right.nexttype = KH_NOTSET;
 	d->right.nexthop = address_any(&ipv4_info);
@@ -381,42 +381,6 @@ static bool load_setup(struct starter_config *cfg,
 	return err;
 }
 
-static bool validate_ip_cider(const char *value, ip_subnet *ip, const char *leftright, char *err_p,
-		starter_errors_t *perrl)
-{
-	bool err = FALSE;
-#  define ERR_FOUND(...) { starter_error_append(perrl, __VA_ARGS__); err = TRUE; }
-
-	if (strchr(value, '/') == NULL) {
-		ERR_FOUND("%s%s=%s needs address/prefix length", leftright, err_p, value);
-	} else {
-		/*
-		 * ttosubnet() helpfully sets the IP address to the lowest IP
-		 * in the subnet. Which is great for subnets but we want to
-		 * retain the specific IP in this case.
-		 * So we subsequently overwrite the IP address of the subnet.
-		 */
-		err_t er = ttosubnet(value, 0, AF_UNSPEC,
-				'0' /* allow host bits */, ip);
-		if (er != NULL) {
-			ERR_FOUND("bad addr %s%s=%s [%s]",
-					leftright, err_p, value, er);
-		} else {
-			if (ip->addr.hport != 0)
-				ERR_FOUND("bad ip address port is not allowed %sinterface-ip=%s", leftright, value)
-
-			er = tnatoaddr(value, strchr(value, '/') - value, AF_UNSPEC, &ip->addr);
-			if (er != NULL) {
-				ERR_FOUND("bad ip address in %s%s=%s [%s]",
-						leftright, err_p, value, er);
-			}
-		}
-	}
-
-	return err;
-#  undef ERR_FOUND
-}
-
 /**
  * Validate that yes in fact we are one side of the tunnel
  *
@@ -534,11 +498,16 @@ static bool validate_end(struct starter_conn *conn_st,
 	}
 
 	/* now that HOSTFAM has been pined down */
-	end->addr_family = hostfam->af;
+	end->host_family = hostfam;
 
 	if (end->strings_set[KSCF_VTI_IP]) {
-		err = validate_ip_cider(end->strings[KSCF_VTI_IP],
-				&end->vti_ip, leftright, "vti", perrl);
+		const char *value = end->strings[KSCF_VTI_IP];
+		err_t oops = text_cidr_to_subnet(shunk1(value), NULL, &end->vti_ip);
+		if (oops != NULL) {
+			ERR_FOUND("bad addr %s%s=%s [%s]",
+				  leftright, "vti", value, oops);
+		}
+		/* XXX: check type? */
 	}
 
 	/* validate the KSCF_SUBNET */
@@ -612,6 +581,15 @@ static bool validate_end(struct starter_conn *conn_st,
 
 		pfreeany(end->id);
 		end->id = clone_str(value, "end->id");
+		/* fixup old ",," in a ID_DER_ASN1_DN to proper backslash comma */
+		if ((end->id[0] != '@') && (strstr(end->id, ",,") != NULL)
+			&& strstr(end->id, "=") != NULL)
+		{
+			char *cc;
+			while ((cc = strstr(end->id, ",,")) != NULL) {
+				cc[0] = '\\';
+			}
+		}
 	}
 
 	if (end->options_set[KSCF_RSAKEY1]) {
@@ -674,13 +652,12 @@ static bool validate_end(struct starter_conn *conn_st,
 					leftright, value, er);
 		}
 		if (!end->has_client) {
-			er = addrtosubnet(&end->sourceip, &end->subnet);
+			er = endtosubnet(&end->sourceip, &end->subnet, HERE);
 			if (er != NULL) {
 				ERR_FOUND("attempt to default %ssubnet from %s failed: %s",
 					leftright, value, er);
 			}
 			end->has_client = TRUE;
-			end->has_client_wildcard = FALSE;
 		}
 		if (end->strings_set[KSCF_INTERFACE_IP]) {
 			ERR_FOUND("can  not specify  %sinterface-ip=%s and  %sssourceip=%s",
@@ -718,12 +695,8 @@ static bool validate_end(struct starter_conn *conn_st,
 	}
 
 	if (end->strings_set[KSCF_PROTOPORT]) {
-		err_t ugh;
 		char *value = end->strings[KSCF_PROTOPORT];
-
-		ugh = ttoprotoport(value, 0, &end->protocol, &end->port,
-				   &end->has_port_wildcard);
-
+		err_t ugh = ttoprotoport(value, &end->protoport);
 		if (ugh != NULL)
 			ERR_FOUND("bad %sprotoport=%s [%s]", leftright, value,
 				  ugh);
@@ -752,8 +725,12 @@ static bool validate_end(struct starter_conn *conn_st,
 	}
 
 	if (end->strings_set[KSCF_INTERFACE_IP]) {
-		err = validate_ip_cider(end->strings[KSCF_INTERFACE_IP],
-				&end->ifaceip, leftright, "interface-ip", perrl);
+		const char *value = end->strings[KSCF_INTERFACE_IP];
+		err_t oops = text_cidr_to_subnet(shunk1(value), NULL, &end->ifaceip);
+		if (oops != NULL) {
+			ERR_FOUND("bad addr %s%s=%s [%s]",
+				  leftright, "interface-ip", value, oops);
+		}
 		if (end->strings_set[KSCF_SOURCEIP]) {
 			ERR_FOUND("can  not specify  %sinterface-ip=%s and  %sssourceip=%s",
 					leftright,
@@ -763,8 +740,6 @@ static bool validate_end(struct starter_conn *conn_st,
 		}
 
 	}
-
-
 
 	if (end->options_set[KNCF_XAUTHSERVER] ||
 	    end->options_set[KNCF_XAUTHCLIENT])

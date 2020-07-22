@@ -30,7 +30,7 @@ west #
 000 "westnet-eastnet-ipv4-psk-ppk":   nflog-group: unset; mark: unset; vti-iface:unset; vti-routing:no; vti-shared:no; nic-offload:auto;
 000 "westnet-eastnet-ipv4-psk-ppk":   our idtype: ID_FQDN; our id=@west; their idtype: ID_FQDN; their id=@east
 000 "westnet-eastnet-ipv4-psk-ppk":   dpd: action:hold; delay:0; timeout:0; nat-t: encaps:auto; nat_keepalive:yes; ikev1_natt:both
-000 "westnet-eastnet-ipv4-psk-ppk":   newest ISAKMP SA: #0; newest IPsec SA: #0;
+000 "westnet-eastnet-ipv4-psk-ppk":   newest ISAKMP SA: #0; newest IPsec SA: #0; conn serial: $1;
 west #
  ipsec whack --impair suppress-retransmits
 west #
@@ -46,7 +46,7 @@ west #
 1v2 "westnet-eastnet-ipv4-psk-ppk" #1: STATE_PARENT_I1: sent v2I1, expected v2R1
 002 "westnet-eastnet-ipv4-psk-ppk" #1: PPK AUTH calculated as initiator
 1v2 "westnet-eastnet-ipv4-psk-ppk" #1: STATE_PARENT_I2: sent v2I2, expected v2R2 {auth=IKEv2 cipher=AES_GCM_16_256 integ=n/a prf=HMAC_SHA2_512 group=MODP2048}
-002 "westnet-eastnet-ipv4-psk-ppk" #2: IKE SA authentication request rejected by peer: AUTHENTICATION_FAILED
+002 "westnet-eastnet-ipv4-psk-ppk" #1: IKE SA authentication request rejected by peer: AUTHENTICATION_FAILED
 000 "westnet-eastnet-ipv4-psk-ppk" #2: scheduling retry attempt 1 of an unlimited number, but releasing whack
 west #
  echo done

@@ -7,7 +7,7 @@ destination -I 192.0.1.254 192.0.2.254 is alive
 west #
  # ensure that clear text does not get through
 west #
- iptables -A INPUT -i eth1 -s 192.0.2.0/24 -j LOGDROP
+ iptables -A INPUT -i eth1 -s 192.0.2.0/24 -j DROP
 west #
  iptables -I INPUT -m policy --dir in --pol ipsec -j ACCEPT
 west #
@@ -39,7 +39,7 @@ west #
 002 "netkey" #2: IKEv2 mode peer ID is ID_FQDN: '@east'
 003 "netkey" #1: authenticated using RSA with SHA2_512
 002 "netkey" #2: negotiated connection [192.0.1.0-192.0.1.255:0-65535 0] -> [192.0.2.0-192.0.2.255:0-65535 0]
-004 "netkey" #2: STATE_V2_IPSEC_I: IPsec SA established tunnel mode {ESP=>0xESPESP <0xESPESP xfrm=AES_GCM_16_256-NONE NATOA=none NATD=none DPD=passive}
+004 "netkey" #2: STATE_V2_ESTABLISHED_CHILD_SA: IPsec SA established tunnel mode {ESP=>0xESPESP <0xESPESP xfrm=AES_GCM_16_256-NONE NATOA=none NATD=none DPD=passive}
 west #
  ../../pluto/bin/ping-once.sh --up -I 192.0.1.254 192.0.2.254
 up

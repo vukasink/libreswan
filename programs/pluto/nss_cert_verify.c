@@ -57,8 +57,8 @@ static bool prepare_nss_import(PK11SlotInfo **slot)
 	 */
 	*slot = PK11_GetInternalKeySlot();
 	if (*slot == NULL) {
-		LSWDBGP(DBG_X509, buf) {
-			lswlogs(buf, "NSS: cert import calling PK11_GetInternalKeySlot() failed: ");
+		LSWDBGP(DBG_BASE, buf) {
+			jam(buf, "NSS: cert import calling PK11_GetInternalKeySlot() failed: ");
 			lswlog_nss_error(buf);
 		}
 		return FALSE;
@@ -290,7 +290,7 @@ static bool verify_end_cert(struct logger *logger,
 	}
 
 	for (const struct usage_desc *p = usages; ; p++) {
-		DBGF(DBG_X509, "verify_end_cert trying profile %s", p->usageName);
+		dbg("verify_end_cert trying profile %s", p->usageName);
 
 		new_vfy_log(&vfy_log);
 		SECStatus rv = CERT_PKIXVerifyCert(end_cert, p->usage, cvin, cvout, NULL);
@@ -298,7 +298,7 @@ static bool verify_end_cert(struct logger *logger,
 		if (rv == SECSuccess) {
 			/* success! */
 			pexpect(vfy_log.count == 0 && vfy_log.head == NULL);
-			DBGF(DBG_X509, "certificate is valid (profile %s)", p->usageName);
+			dbg("certificate is valid (profile %s)", p->usageName);
 			verified = true;
 			break;
 		}
@@ -401,12 +401,17 @@ static void add_decoded_cert(CERTCertDBHandle *handle,
 	}
 	dbg("decoded cert: %s", cert->subjectName);
 
-	/* extra verification */
-#ifdef FIPS_CHECK
+	/*
+	 * Currently only a check for RSA is needed, as the only ECDSA
+	 * key size not allowed in FIPS mode (p192 curve), is not implemented
+	 * by NSS.
+	 * See also RSA_secret_sane() and ECDSA_secret_sane()
+	 */
 	if (libreswan_fipsmode()) {
 		SECKEYPublicKey *pk = CERT_ExtractPublicKey(cert);
 		passert(pk != NULL);
-		if ((pk->u.rsa.modulus.len * BITS_PER_BYTE) < FIPS_MIN_RSA_KEY_SIZE) {
+		if (pk->keyType == rsaKey &&
+			((pk->u.rsa.modulus.len * BITS_PER_BYTE) < FIPS_MIN_RSA_KEY_SIZE)) {
 			libreswan_log("FIPS: Rejecting peer cert with key size %d under %d",
 					pk->u.rsa.modulus.len * BITS_PER_BYTE,
 					FIPS_MIN_RSA_KEY_SIZE);
@@ -416,7 +421,6 @@ static void add_decoded_cert(CERTCertDBHandle *handle,
 		}
 		SECKEY_DestroyPublicKey(pk);
 	}
-#endif /* FIPS_CHECK */
 
 	/*
 	 * Append the certificate to the CERTS array.
@@ -611,7 +615,7 @@ struct verified_certs find_and_verify_certs(struct logger *logger,
 	}
 
 	logtime_t start_add = logtime_start(logger);
-	add_pubkey_from_nss_cert(&result.pubkey_db, keyid, end_cert);
+	add_pubkey_from_nss_cert(&result.pubkey_db, keyid, end_cert, logger);
 	logtime_stop(&start_add, "%s() calling add_pubkey_from_nss_cert()", __func__);
 
 	return result;
@@ -779,7 +783,7 @@ bool cert_VerifySubjectAltName(const CERTCertificate *cert,
 
 	LSWLOG_RC(RC_LOG_SERIOUS, buf) {
 		jam(buf, "certificate subjectAltName extension does not match ");
-		lswlog_enum(buf, &ike_idtype_names, id->kind);
+		jam_enum(buf, &ike_idtype_names, id->kind);
 		jam(buf, " '");
 		jam_sanitized_bytes(buf, raw_id, strlen(raw_id));
 		jam(buf, "'");

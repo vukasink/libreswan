@@ -23,8 +23,6 @@
  *
  */
 
-#include "lswlog.h"
-
 #include "defs.h"
 #include "ikev2_ts.h"
 #include "connections.h"	/* for struct end */
@@ -33,6 +31,7 @@
 #include "hostpair.h"
 #include "ip_info.h"
 #include "ip_selector.h"
+#include "log.h"
 
 /*
  * While the RFC seems to suggest that the traffic selectors come in
@@ -87,14 +86,14 @@ static const char *fit_string(enum fit fit)
 
 void ikev2_print_ts(const struct traffic_selector *ts)
 {
-	DBG(DBG_CONTROLMORE, {
+	if (DBGP(DBG_BASE)) {
 		DBG_log("printing contents struct traffic_selector");
 		DBG_log("  ts_type: %s", enum_name(&ikev2_ts_type_names, ts->ts_type));
 		DBG_log("  ipprotoid: %d", ts->ipprotoid);
 		DBG_log("  port range: %d-%d", ts->startport, ts->endport);
 		range_buf b;
 		DBG_log("  ip range: %s", str_range(&ts->net, &b));
-	});
+	}
 }
 
 /* rewrite me with address_as_{chunk,shunk}()? */
@@ -207,20 +206,94 @@ static stf_status ikev2_emit_ts(pb_stream *outpbs,
 	return STF_OK;
 }
 
+static struct traffic_selector impair_ts_to_subnet(const struct traffic_selector *ts)
+{
+	struct traffic_selector ts_ret = *ts;
+
+	ts_ret.net.end = ts_ret.net.start;
+	ts_ret.net.is_subnet = true;
+
+	return ts_ret;
+}
+
+
+static struct traffic_selector impair_ts_to_supernet(const struct traffic_selector *ts)
+{
+	struct traffic_selector ts_ret = *ts;
+
+	if (ts_ret.ts_type == IKEv2_TS_IPV4_ADDR_RANGE)
+		ts_ret.net = range_from_subnet(&ipv4_info.all_addresses);
+	else if (ts_ret.ts_type == IKEv2_TS_IPV6_ADDR_RANGE)
+		ts_ret.net = range_from_subnet(&ipv6_info.all_addresses);
+
+	ts_ret.net.is_subnet = true;
+
+	return ts_ret;
+}
+
 stf_status v2_emit_ts_payloads(const struct child_sa *child,
 			       pb_stream *outpbs,
 			       const struct connection *c0)
 {
 	const struct traffic_selector *ts_i, *ts_r;
+	struct traffic_selector ts_i_impaired, ts_r_impaired;
+
 
 	switch (child->sa.st_sa_role) {
 	case SA_INITIATOR:
 		ts_i = &child->sa.st_ts_this;
 		ts_r = &child->sa.st_ts_that;
+		if (child->sa.st_state->kind == STATE_V2_REKEY_CHILD_I0 &&
+				impair.rekey_initiate_supernet) {
+			ts_i_impaired =  impair_ts_to_supernet(ts_i);
+			ts_i = ts_r =  &ts_i_impaired; /* supernet TSi = TSr = 0/0 */
+			range_buf tsi_buf;
+                        range_buf tsr_buf;
+			dbg("rekey-initiate-supernet TSi and TSr set to %s %s",
+					str_range(&ts_i->net, &tsi_buf),
+					str_range(&ts_r->net, &tsr_buf));
+
+		} else if (child->sa.st_state->kind == STATE_V2_REKEY_CHILD_I0 &&
+				impair.rekey_initiate_subnet) {
+			ts_i_impaired =  impair_ts_to_subnet(ts_i);
+			ts_r_impaired =  impair_ts_to_subnet(ts_r);
+			ts_i = &ts_i_impaired;
+			ts_r = &ts_r_impaired;
+			range_buf tsi_buf;
+			range_buf tsr_buf;
+			dbg("rekey-initiate-subnet TSi and TSr set to %s %s",
+					str_range(&ts_i->net, &tsi_buf),
+					str_range(&ts_r->net, &tsr_buf));
+
+		}
+
 		break;
 	case SA_RESPONDER:
 		ts_i = &child->sa.st_ts_that;
 		ts_r = &child->sa.st_ts_this;
+		if (child->sa.st_state->kind == STATE_V2_REKEY_CHILD_R0 &&
+				impair.rekey_respond_subnet) {
+			ts_i_impaired =  impair_ts_to_subnet(ts_i);
+			ts_r_impaired =  impair_ts_to_subnet(ts_r);
+
+			ts_i = &ts_i_impaired;
+			ts_r = &ts_r_impaired;
+			range_buf tsi_buf;
+			range_buf tsr_buf;
+			dbg("rekey-respond-subnet TSi and TSr set to %s %s",
+					str_range(&ts_i->net, &tsi_buf),
+					str_range(&ts_r->net, &tsr_buf));
+		}
+		if (child->sa.st_state->kind == STATE_V2_REKEY_CHILD_R0 &&
+				impair.rekey_respond_supernet) {
+			ts_i_impaired =  impair_ts_to_supernet(ts_i);
+			ts_i = ts_r =  &ts_i_impaired; /* supernet TSi = TSr = 0/0 */
+			range_buf tsi_buf;
+                        range_buf tsr_buf;
+			dbg("rekey-respond-supernet TSi and TSr set to %s %s",
+					str_range(&ts_i->net, &tsi_buf),
+					str_range(&ts_r->net, &tsr_buf));
+		}
 		break;
 	default:
 		bad_case(child->sa.st_sa_role);
@@ -230,9 +303,9 @@ stf_status v2_emit_ts_payloads(const struct child_sa *child,
 	 * XXX: this looks wrong
 	 *
 	 * - instead of emitting two traffic selector payloads (TSi
-	 *   TSr) each containg all the corresponding traffic
+	 *   TSr) each containing all the corresponding traffic
 	 *   selectors, it is emitting a sequence of traffic selector
-	 *   payloads each containg just one traffic selector
+	 *   payloads each containing just one traffic selector
 	 *
 	 * - should multiple initiator (responder) traffic selector
 	 *   payloads be emitted then they will all contain the same
@@ -600,14 +673,13 @@ static struct score score_end(const struct end *end,
 			      const char *what, unsigned index)
 {
 	const struct traffic_selector *ts = &tss->ts[index];
-	DBG(DBG_CONTROLMORE,
-	    range_buf ts_net;
-	    DBG_log("    %s[%u] .net=%s .iporotoid=%d .{start,end}port=%d..%d",
-		    what, index,
-		    str_range(&ts->net, &ts_net),
-		    ts->ipprotoid,
-		    ts->startport,
-		    ts->endport));
+	range_buf ts_net;
+	dbg("    %s[%u] .net=%s .iporotoid=%d .{start,end}port=%d..%d",
+	    what, index,
+	    str_range(&ts->net, &ts_net),
+	    ts->ipprotoid,
+	    ts->startport,
+	    ts->endport);
 
 	struct score score = { .ok = false, };
 	score.address = score_address_range(end, tss, fit, what, index);
@@ -724,7 +796,7 @@ bool v2_process_ts_request(struct child_sa *child,
 	 */
 	if (md->st == &child->sa) {
 		dbg("Child SA TS Request has child->sa == md->st; so using child connection");
-	} else if (md->st == &ike_sa(&child->sa)->sa) {
+	} else if (md->st == &ike_sa(&child->sa, HERE)->sa) {
 		dbg("Child SA TS Request has ike->sa == md->st; so using parent connection");
 	} else {
 		dbg("Child SA TS Request has an unknown md->st; so using unknown connection");
@@ -1121,14 +1193,12 @@ bool v2_process_ts_response(struct child_sa *child,
 	struct best_score best = score_ends(initiator_widening, c, &e, &tsi, &tsr);
 
 	if (!best.ok) {
-			DBG(DBG_CONTROLMORE,
-			    DBG_log("reject responder TSi/TSr Traffic Selector"));
-			/* prevents parent from going to I3 */
-			return false;
+		dbg("reject responder TSi/TSr Traffic Selector");
+		/* prevents parent from going to I3 */
+		return false;
 	}
 
-	DBG(DBG_CONTROLMORE,
-	    DBG_log("found an acceptable TSi/TSr Traffic Selector"));
+	dbg("found an acceptable TSi/TSr Traffic Selector");
 	struct state *st = &child->sa;
 	memcpy(&st->st_ts_this, best.tsi,
 	       sizeof(struct traffic_selector));
@@ -1148,8 +1218,6 @@ bool v2_process_ts_response(struct child_sa *child,
 	c->spd.this.port = st->st_ts_this.startport;
 	c->spd.this.protocol = st->st_ts_this.ipprotoid;
 	setportof(htons(c->spd.this.port),
-		  &c->spd.this.host_addr);
-	setportof(htons(c->spd.this.port),
 		  &c->spd.this.client.addr);
 
 	c->spd.this.has_client =
@@ -1160,8 +1228,6 @@ bool v2_process_ts_response(struct child_sa *child,
 	c->spd.that.client = tmp_subnet_r;
 	c->spd.that.port = st->st_ts_that.startport;
 	c->spd.that.protocol = st->st_ts_that.ipprotoid;
-	setportof(htons(c->spd.that.port),
-		  &c->spd.that.host_addr);
 	setportof(htons(c->spd.that.port),
 		  &c->spd.that.client.addr);
 
@@ -1180,33 +1246,34 @@ bool v2_process_ts_response(struct child_sa *child,
  *
  * We already matched the right connection by the SPI of v2N_REKEY_SA
  */
-stf_status child_rekey_ts_verify(struct msg_digest *md)
+bool child_rekey_ts_verify(struct child_sa *child, struct msg_digest *md)
 {
-	struct state *st = md->st;
-	passert(st->st_state->kind == STATE_V2_REKEY_CHILD_R0 ||
-		st->st_state->kind == STATE_V2_REKEY_CHILD_I);
+	if (!pexpect(child->sa.st_state->kind == STATE_V2_REKEY_CHILD_R0 ||
+		     child->sa.st_state->kind == STATE_V2_REKEY_CHILD_I1)) {
+		return false;
+	}
 
 	struct traffic_selectors their_tsis = { .nr = 0, };
 	struct traffic_selectors their_tsrs = { .nr = 0, };
 	enum message_role md_role = v2_msg_role(md);
 
-	/* should really return stf_status, not bool */
 	if (!v2_parse_tss(md, &their_tsis, &their_tsrs)) {
-		loglog(RC_LOG_SERIOUS, "Received malformed TSi/TSr payload(s)");
-		return STF_FAIL + v2N_INVALID_SYNTAX;
+		log_state(RC_LOG_SERIOUS, &child->sa, "received malformed TSi/TSr payload(s)");
+		return false;
 	}
 
-	struct traffic_selector ts_this = ikev2_end_to_ts(&st->st_connection->spd.this);
-	struct traffic_selector ts_that = ikev2_end_to_ts(&st->st_connection->spd.that);
+	struct traffic_selector ts_this = ikev2_end_to_ts(&child->sa.st_connection->spd.this);
+	struct traffic_selector ts_that = ikev2_end_to_ts(&child->sa.st_connection->spd.that);
 
 	if (!ts_in_tslist(&their_tsis, (md_role == MESSAGE_REQUEST) ? &ts_that : &ts_this)) {
-		loglog(RC_LOG_SERIOUS, "Received TSi payload does not contain existing IPsec SA traffic Selectors");
-		return STF_FAIL + v2N_TS_UNACCEPTABLE;
+		log_state(RC_LOG_SERIOUS, &child->sa,
+			  "received TSi payload does not contain existing IPsec SA traffic Selectors");
+		return false;
 	}
 
 	if (!ts_in_tslist(&their_tsrs, (md_role == MESSAGE_REQUEST) ? &ts_this : &ts_that)) {
-		loglog(RC_LOG_SERIOUS, "Received TSr payload(s) does not contain existing IPsec SA Traffic Selectors");
-		return STF_FAIL + v2N_TS_UNACCEPTABLE;
+		log_state(RC_LOG_SERIOUS, &child->sa, "received TSr payload(s) does not contain existing IPsec SA Traffic Selectors");
+		return false;
 	}
-	return STF_OK;
+	return true;
 }

@@ -26,7 +26,7 @@
 #
 # Pull in all its defaults so that they override everything below.
 
-KVM_GUEST_OS ?= f30
+KVM_GUEST_OS ?= f32
 include testing/libvirt/$(KVM_GUEST_OS).mk
 
 
@@ -55,7 +55,7 @@ KVM_ALL_ALGS ?= false
 KVM_USE_SECCOMP ?= true
 KVM_USE_LABELED_IPSEC ?= true
 KVM_SD_RESTART_TYPE=no
-KVM_USE_FIPSCHECK ?= true
+KVM_USE_FIPSCHECK ?= false
 
 KVM_MAKEFLAGS ?= \
 	USE_EFENCE=$(KVM_USE_EFENCE) \
@@ -64,7 +64,7 @@ KVM_MAKEFLAGS ?= \
 	USE_LABELED_IPSEC=$(KVM_USE_LABELED_IPSEC) \
 	USE_NSS_IPSEC_PROFILE=$(KVM_USE_NSS_IPSEC_PROFILE) \
 	SD_RESTART_TYPE=$(KVM_SD_RESTART_TYPE) \
-	USE_NSS_PRF=$(KVM_USE_NSS_PRF) \
+	USE_NSS_KDF=$(KVM_USE_NSS_KDF) \
 	USE_FIPSCHECK=$(KVM_USE_FIPSCHECK)
 
 KVM_UID ?= $(shell id -u)
@@ -195,39 +195,54 @@ define kvm-HOST-DOMAIN
 endef
 
 
+
 #
 # Check that things are correctly configured for creating the KVM
 # domains
 #
-# Use := so that the make variable is evaluated only once.  Result is
-# either empty, or a make target that will print the error.
+# Only do this once per boot.
 #
 
-KVM_ENTROPY_FILE ?= /proc/sys/kernel/random/entropy_avail
-KVM_ENTROPY_OK := $(shell test ! -r $(KVM_ENTROPY_FILE) || test $(shell cat $(KVM_ENTROPY_FILE)) -gt 100 || echo broken-kvm-entropy)
-.PHONY: broken-kvm-entropy
-broken-kvm-entropy:
-	:
-	:  According to $(KVM_ENTROPY_FILE) your computer does not seem to have much entropy.
-	:
-	:  Check the wiki for hints on how to fix this.
-	:
-	false
+KVM_BOOT_FILE = $(firstword $(wildcard /var/run/rc.log /var/log/boot.log))
 
+KVM_ENTROPY_FILE ?= /proc/sys/kernel/random/entropy_avail
+
+$(KVM_LOCALDIR)/$(KVM_FIRST_PREFIX)entropy-ok: $(KVM_BOOT_FILE) | $(KVM_LOCALDIR)
+	@if test ! -r $(KVM_ENTROPY_FILE); then				\
+		echo no entropy to check ;				\
+	elif test $$(cat $(KVM_ENTROPY_FILE)) -gt 100 ; then		\
+		echo lots of entropy ;					\
+	else								\
+		echo ;							\
+		echo  According to:					\
+		echo ;							\
+		echo      $(KVM_ENTROPY_FILE) ;				\
+		echo ;							\
+		echo  your computer does not have much entropy ;	\
+		echo ;							\
+		echo  Check the wiki for hints on how to fix this. ;	\
+		echo ;							\
+		false ;							\
+	fi
+	touch $@
 
 KVM_QEMUDIR ?= /var/lib/libvirt/qemu
-KVM_QEMUDIR_OK := $(shell test -w $(KVM_QEMUDIR) || echo broken-kvm-qemu-directory)
-.PHONY: broken-kvm-qemu-directory
-broken-kvm-qemu-directory:
-	:
-	:  The directory:
-	:
-	:      $(KVM_QEMUDIR)
-	:
-	:  is not writeable.  This will break virsh which is
-	:  used to manipulate the domains.
-	:
-	false
+
+$(KVM_LOCALDIR)/$(KVM_FIRST_PREFIX)qemudir-ok: $(KVM_BOOT_FILE) | $(KVM_LOCALDIR)
+	echo $(KVM_BOOT_FILE)
+	@if ! test -w $(KVM_QEMUDIR) ; then				\
+		echo ;							\
+		echo  The directory:					\
+		echo ;							\
+		echo      $(KVM_QEMUDIR) ;				\
+		echo ;							\
+		echo  is not writeable. ;				\
+		echo  This will break virsh which is ;			\
+		echo  used to manipulate the domains. ;			\
+		echo ;							\
+		false ;							\
+	fi
+	touch $@
 
 
 #
@@ -307,8 +322,8 @@ web-pages-disabled:
 
 define kvm-test
 .PHONY: $(1)
-$(1): 		$$(KVM_QMUDIR_OK) \
-		$$(KVM_ENTROPY_OK) \
+$(1): 		$(KVM_LOCALDIR)/$(KVM_FIRST_PREFIX)qemudir-ok \
+		$(KVM_LOCALDIR)/$(KVM_FIRST_PREFIX)entropy-ok \
 		kvm-keys-ok \
 		kvm-shutdown-local-domains
 	@$(MAKE) $$(if $$(WEB_ENABLED), web-test-prep, -s web-pages-disabled)
@@ -408,9 +423,9 @@ kvm-keys: $(KVM_KEYS)
 $(KVM_KEYS):	$(top_srcdir)/testing/x509/dist_certs.py \
 		$(top_srcdir)/testing/x509/openssl.cnf \
 		$(top_srcdir)/testing/x509/strongswan-ec-gen.sh \
-		$(top_srcdir)/testing/baseconfigs/all/etc/bind/generate-dnssec.sh \
-		$(KVM_QEMUDIR_OK) \
-		$(KVM_ENTROPY_OK)
+		$(top_srcdir)/testing/baseconfigs/all/etc/bind/generate-dnssec.sh
+	: check machine ok
+	$(MAKE) $(KVM_LOCALDIR)/$(KVM_FIRST_PREFIX)qemudir-ok $(KVM_LOCALDIR)/$(KVM_FIRST_PREFIX)entropy-ok
 	: invoke phony target to shut things down and delete old keys
 	$(MAKE) kvm-shutdown-local-domains
 	$(MAKE) $(KVM_LOCALDIR)/$(KVM_BUILD_DOMAIN).xml
@@ -442,9 +457,12 @@ $(KVM_KEYS):	$(top_srcdir)/testing/x509/dist_certs.py \
 	cd testing/x509 && tar xf kvm-keys.tar
 	rm -f testing/x509/kvm-keys.tar
 	:
-	: Also regenerate the DNSSEC keys -- uses host
+	: Also regenerate the DNSSEC keys
 	:
-	$(top_srcdir)/testing/baseconfigs/all/etc/bind/generate-dnssec.sh
+	$(KVMSH) --chdir . $(KVM_BUILD_DOMAIN) ./testing/baseconfigs/all/etc/bind/generate-dnssec.sh
+	:
+	: All done.
+	:
 	$(KVMSH) --shutdown $(KVM_BUILD_DOMAIN)
 	touch $@
 
@@ -487,7 +505,7 @@ kvm-rpm:
 	sed -e "s/@IPSECBASEVERSION@/$(RPM_VERSION)/g" \
 		-e "s/^Version:.*/Version: $(RPM_VERSION)/g" \
 		-e "s/@INITSYSTEM@/$(INITSYSTEM)/g" \
-		packaging/fedora/libreswan-testing.spec \
+		testing/packaging/fedora/libreswan-testing.spec \
 		> ~/rpmbuild/SPECS/libreswan-testing.spec
 	mkdir -p ~/rpmbuild/SOURCES
 	git archive --format=tar --prefix=$(RPM_PREFIX)/ \
@@ -609,12 +627,13 @@ kvm-uninstall-test-networks: kvm-uninstall-test-domains
 # Build KVM domains from scratch
 #
 
-KVM_ISO = $(KVM_POOLDIR)/$(notdir $(KVM_ISO_URL))
+KVM_ISO = $(notdir $(KVM_ISO_URL))
 
 .PHONY: kvm-iso
 kvm-iso: $(KVM_ISO)
-$(KVM_ISO): | $(KVM_POOLDIR)
-	cd $(KVM_POOLDIR) && wget $(KVM_ISO_URL)
+$(KVM_POOLDIR)/$(KVM_ISO): | $(KVM_POOLDIR)
+	wget --output-document $@.tmp --no-clobber -- $(KVM_ISO_URL)
+	mv $@.tmp $@
 
 define destroy-kvm-domain
 	: destroy-kvm-domain domain=$(1)
@@ -656,14 +675,16 @@ endef
 
 .PRECIOUS: $(KVM_POOLDIR)/$(KVM_BASE_DOMAIN).ks
 $(KVM_POOLDIR)/$(KVM_BASE_DOMAIN).ks: \
-		$(KVM_QEMUDIR_OK) \
 		| \
-		$(KVM_ISO) \
+		$(KVM_POOLDIR)/$(KVM_ISO) \
 		$(KVM_KICKSTART_FILE) \
 		$(KVM_GATEWAY_FILE) \
 		$(KVM_POOLDIR)
 	: Confirm that there is a tty - else virt-install fails mysteriously
 	tty
+	: Confirm that QEMU is ok - not a dependency else as only needed when building
+	$(MAKE) $(KVM_LOCALDIR)/$(KVM_FIRST_PREFIX)qemudir-ok
+	: clean up
 	$(call destroy-kvm-domain,$(KVM_BASE_DOMAIN))
 	: delete any old disk and let virt-install create the image
 	rm -f '$(basename $@).qcow2'
@@ -671,15 +692,14 @@ $(KVM_POOLDIR)/$(KVM_BASE_DOMAIN).ks: \
 		--name=$(KVM_BASE_DOMAIN) \
 		--memory 1024 \
 		--disk size=$(VIRT_DISK_SIZE_GB),cache=writeback,path=$(basename $@).qcow2 \
-		--location=$(KVM_ISO) \
+		--location=$(KVM_POOLDIR)/$(KVM_ISO) \
 		--initrd-inject=$(KVM_KICKSTART_FILE) \
 		--extra-args="swanname=$(KVM_BASE_DOMAIN) ks=file:/$(notdir $(KVM_KICKSTART_FILE)) console=tty0 console=ttyS0,115200 net.ifnames=0 biosdevname=0"
 	: the reboot message from virt-install can be ignored
 	touch $@
 
-$(KVM_POOLDIR)/$(KVM_BASE_DOMAIN).upgraded: \
-		$(KVM_POOLDIR)/$(KVM_BASE_DOMAIN).ks \
-		$(KVM_QEMUDIR_OK)
+$(KVM_POOLDIR)/$(KVM_BASE_DOMAIN).upgraded: $(KVM_POOLDIR)/$(KVM_BASE_DOMAIN).ks
+	$(MAKE) $(KVM_LOCALDIR)/$(KVM_FIRST_PREFIX)qemudir-ok
 	$(if $(KVM_PACKAGE_INSTALL), $(if $(KVM_INSTALL_PACKAGES), \
 		$(KVMSH) $(KVM_BASE_DOMAIN) $(KVM_PACKAGE_INSTALL) $(KVM_INSTALL_PACKAGES)))
 	$(if $(KVM_PACKAGE_UPGRADE), $(if $(KVM_UPGRADE_PACKAGES), \
@@ -719,17 +739,16 @@ define shadow-kvm-disk
 	$(KVMSH) --shutdown $(basename $(notdir $(1)))
 	: create a shadow - from is used as a backing store
 	rm -f $(2)
-	qemu-img create -f qcow2 -b $(1) $(2)
+	qemu-img create -f qcow2 -F qcow2 -b $(1) $(2)
 endef
 
 KVM_BASE_DISK_CLONES = $(addsuffix .qcow2, $(addprefix $(KVM_LOCALDIR)/, $(KVM_BASE_DOMAIN_CLONES)))
 $(KVM_BASE_DISK_CLONES): \
-		$(KVM_QEMUDIR_OK) \
 		| \
 		$(KVM_POOLDIR)/$(KVM_BASE_DOMAIN).upgraded \
 		$(KVM_LOCALDIR)
-	: copy-base-disk from=$< to=$@
 	$(MAKE) kvm-shutdown-base-domain
+	: copy-base-disk $@
 	test -r $(KVM_POOLDIR)/$(KVM_BASE_DOMAIN).qcow2 || sudo chgrp $(KVM_GROUP) $(KVM_POOLDIR)/$(KVM_BASE_DOMAIN).qcow2
 	test -r $(KVM_POOLDIR)/$(KVM_BASE_DOMAIN).qcow2 || sudo chmod g+r          $(KVM_POOLDIR)/$(KVM_BASE_DOMAIN).qcow2
 	: if this test fails, the steps:
@@ -741,7 +760,6 @@ $(KVM_BASE_DISK_CLONES): \
 
 KVM_BUILD_DISK_CLONES = $(addsuffix .qcow2, $(addprefix $(KVM_LOCALDIR)/, $(KVM_BUILD_DOMAIN_CLONES)))
 $(KVM_BUILD_DISK_CLONES): \
-		$(KVM_QEMUDIR_OK) \
 		| \
 		$(KVM_LOCALDIR)/$(KVM_BUILD_DOMAIN).qcow2 \
 		$(KVM_LOCALDIR)
@@ -770,7 +788,7 @@ $(KVM_BUILD_DISK_CLONES): \
 #
 
 $(KVM_LOCALDIR)/$(KVM_BUILD_DOMAIN).xml: \
-		$(KVM_QEMUDIR_OK) \
+		$(KVM_LOCALDIR)/$(KVM_FIRST_PREFIX)qemudir-ok \
 		| \
 		$(KVM_BASE_GATEWAY_FILE) \
 		$(KVM_POOLDIR)/$(KVM_BASE_DOMAIN).upgraded \
@@ -797,7 +815,7 @@ define install-kvm-test-domain
   .PHONY: install-kvm-domain-$(1)$(2)
   install-kvm-domain-$(1)$(2): $$(KVM_LOCALDIR)/$(1)$(2).xml
   $$(KVM_LOCALDIR)/$(1)$(2).xml: \
-		$$(KVM_QEMUDIR_OK) \
+		$(KVM_LOCALDIR)/$(KVM_FIRST_PREFIX)qemudir-ok \
 		| \
 		$$(foreach subnet,$$(KVM_TEST_SUBNETS), \
 			$$(KVM_POOLDIR)/$(1)$$(subnet).net) \
@@ -935,45 +953,30 @@ kvm-demolish: kvm-uninstall-base-domain
 kvm-demolish: kvm-uninstall-base-network
 
 #
-# kvm-build target
+# kvm-install target
 #
 # First delete all of the build domain's clones.  The build domain
 # won't boot when its clones are running.
-
-.PHONY: kvm-$(KVM_BUILD_DOMAIN)-build
-kvm-$(KVM_BUILD_DOMAIN)-build: \
-		$(KVM_QEMUDIR_OK) \
-		| \
-		$(KVM_LOCALDIR)/$(KVM_BUILD_DOMAIN).xml
-ifeq ($(KVM_INSTLL_RPM), true)
-	$(KVMSH) $(KVMSH_FLAGS) --chdir . $(KVM_BUILD_DOMAIN) 'rm -fr ~/rpmbuild/*RPMS'
-	$(KVMSH) $(KVMSH_FLAGS) --chdir . $(KVM_BUILD_DOMAIN) 'make kvm-rpm'
-else
-	$(KVMSH) $(KVMSH_FLAGS) --chdir . $(KVM_BUILD_DOMAIN) 'export OBJDIR=$(KVM_OBJDIR)'
-	$(KVMSH) $(KVMSH_FLAGS) --chdir . $(KVM_BUILD_DOMAIN) 'make OBJDIR=$(KVM_OBJDIR) $(KVM_MAKEFLAGS) base'
-endif
-	: install will run $(KVMSH) --shutdown $(1)
-
-.PHONY: kvm-build
-kvm-build: $(foreach domain, $(KVM_BUILD_DOMAIN_CLONES), uninstall-kvm-domain-$(domain))
-	$(MAKE) kvm-$(KVM_BUILD_DOMAIN)-build
-
 #
-# kvm-install target
 #
 # So that all the INSTALL domains are deleted before the build domain
 # is booted, this is done using a series of sub-makes (without this,
 # things barf because the build domain things its disk is in use).
 
 .PHONY: kvm-$(KVM_BUILD_DOMAIN)-install
-kvm-$(KVM_BUILD_DOMAIN)-install: $(KVM_QEMUDIR_OK) kvm-$(KVM_BUILD_DOMAIN)-build | $(KVM_LOCALDIR)/$(KVM_BUILD_DOMAIN).xml
-ifeq ($(KVM_INSTLL_RPM), true)
+kvm-$(KVM_BUILD_DOMAIN)-install: \
+		$(KVM_LOCALDIR)/$(KVM_FIRST_PREFIX)qemudir-ok \
+		| \
+		$(KVM_LOCALDIR)/$(KVM_BUILD_DOMAIN).xml
+ifeq ($(KVM_INSTALL_RPM), true)
+	$(KVMSH) $(KVMSH_FLAGS) --chdir . $(KVM_BUILD_DOMAIN) 'rm -fr ~/rpmbuild/*RPMS'
+	$(KVMSH) $(KVMSH_FLAGS) --chdir . $(KVM_BUILD_DOMAIN) 'make kvm-rpm'
 	$(KVMSH) $(KVMSH_FLAGS) --chdir . $(KVM_BUILD_DOMAIN) 'rpm -aq | grep libreswan && rpm -e $$(rpm -aq | grep libreswan) || true'
 	$(KVMSH) $(KVMSH_FLAGS) --chdir . $(KVM_BUILD_DOMAIN) 'rpm -i ~/rpmbuild/RPMS/x86_64/libreswan*rpm'
 	$(KVMSH) $(KVMSH_FLAGS) --chdir . $(KVM_BUILD_DOMAIN) 'cp -f ~/rpmbuild/RPMS/x86_64/libreswan*rpm /source/'
 	$(KVMSH) $(KVMSH_FLAGS) --chdir . $(KVM_BUILD_DOMAIN) 'cp -f ~/rpmbuild/SRPMS/libreswan*rpm /source/'
 else
-	$(KVMSH) $(KVMSH_FLAGS) --chdir . $(KVM_BUILD_DOMAIN) 'make OBJDIR=$(KVM_OBJDIR) $(KVM_MAKEFLAGS) install-base'
+	$(KVMSH) $(KVMSH_FLAGS) --chdir . $(KVM_BUILD_DOMAIN) 'export OBJDIR=$(KVM_OBJDIR) ; make OBJDIR=$(KVM_OBJDIR) $(KVM_MAKEFLAGS) install-base'
 ifeq ($(KVM_USE_FIPSCHECK),true)
 	$(KVMSH) $(KVMSH_FLAGS) --chdir . $(KVM_BUILD_DOMAIN) 'make OBJDIR=$(KVM_OBJDIR) $(KVM_MAKEFLAGS) install-fipshmac'
 endif
@@ -1003,7 +1006,7 @@ kvm-bisect:
 define kvmsh-DOMAIN
   #(info kvmsh-DOMAIN domain=$(1) file=$(2))
   .PHONY: kvmsh-$(1)
-  kvmsh-$(1):	$$(KVM_QEMUDIR_OK) \
+  kvmsh-$(1):	$(KVM_LOCALDIR)/$(KVM_FIRST_PREFIX)qemudir-ok \
 		| \
 		$(2)
 	: kvmsh-DOMAIN domain=$(1) file=$(2)
@@ -1109,14 +1112,14 @@ Configuration:
     $(call kvm-var-value,KVM_POOLDIR)$(if $(wildcard $(KVM_POOLDIR)),, [MISSING])
 	default directory for storing VM files
     $(call kvm-var-value,KVM_POOLDIR)$(if $(wildcard $(KVM_POOLDIR)),, [MISSING])
-	directory for storing the shared base (master) VM;
+	directory for storing the shared base VM;
 	should be relatively permanent storage
     $(call kvm-var-value,KVM_LOCALDIR)$(if $(wildcard $(KVM_LOCALDIR)),, [MISSING])
 	directory for storing the VMs local to this build tree;
 	can be temporary storage (for instance /tmp)
     $(call kvm-var-value,KVM_GATEWAY)
 	the shared NATting gateway;
-	used by the base (master) domain along with any local domains
+	used by the base domain along with any local domains
 	when internet access is required
     $(call kvm-var-value,KVM_GUEST_OS)
     $(call kvm-var-value,KVM_KICKSTART_FILE)

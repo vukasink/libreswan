@@ -446,13 +446,15 @@ def create_mainca_end_certs(mainca_end_certs):
     for name in mainca_end_certs:
         # put special cert handling here
         print(" - creating %s"% name)
+        keysize = 3072
         if name == 'smallkey':
             keysize = 1024
-        else:
-            if name == 'key4096':
-                keysize = 4096
-            else:
-                keysize = 3072
+        if name == 'mediumkey':
+            keysize = 2048
+        if name == 'key2032':
+            keysize = 2032
+        if name == 'key4096':
+            keysize = 4096
 
         if name == 'notyetvalid':
             startdate = dates['FUTURE']
@@ -890,7 +892,7 @@ def run_dist_certs():
                         'west-ekuCritical-eku-emailProtection', 'east-ekuCritical-eku-emailProtection', # Should still work
                         'usage-server', 'usage-client', 'usage-both',
                         'nic-noext', 'nic-nourl',
-                        'smallkey', 'key4096',
+                        'smallkey', 'mediumkey', 'key2032', 'key4096',
                         'notyetvalid','notvalidanymore',
                         'signedbyother','otherwest','othereast','wrongdnorg',
                         'unwisechar','spaceincn','hashsha1',
@@ -916,7 +918,8 @@ def create_nss_pw():
 def main():
     outdir = os.path.dirname(sys.argv[0])
     cwd = os.getcwd()
-    os.chdir(outdir)
+    if outdir:
+        os.chdir(outdir)
     global dates
     global dirbase
     reset_files()

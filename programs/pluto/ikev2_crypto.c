@@ -83,13 +83,12 @@ void ikev2_derive_child_keys(struct child_sa *child)
 
 	ipi->keymat_len = integ_key_size + encrypt_key_size + encrypt_salt_size;
 
-	DBG(DBG_CONTROL,
-	    DBG_log("integ=%s: .key_size=%zu encrypt=%s: .key_size=%zu .salt_size=%zu keymat_len=%" PRIu16,
-		    integ != NULL ? integ->common.name : "N/A",
-		    integ_key_size,
-		    encrypt != NULL ? encrypt->common.name : "N/A",
-		    encrypt_key_size, encrypt_salt_size,
-		    ipi->keymat_len));
+	dbg("integ=%s: .key_size=%zu encrypt=%s: .key_size=%zu .salt_size=%zu keymat_len=%" PRIu16,
+	    integ != NULL ? integ->common.fqn : "N/A",
+	    integ_key_size,
+	    encrypt != NULL ? encrypt->common.fqn : "N/A",
+	    encrypt_key_size, encrypt_salt_size,
+	    ipi->keymat_len);
 
 	/*
 	 *
@@ -138,7 +137,7 @@ void ikev2_derive_child_keys(struct child_sa *child)
 
 	/*
 	 * The initiator stores outgoing initiator-to-responder keymat
-	 * in PEER, and incomming responder-to-initiator keymat in
+	 * in PEER, and incoming responder-to-initiator keymat in
 	 * OUR.
 	 */
 	switch (child->sa.st_sa_role) {

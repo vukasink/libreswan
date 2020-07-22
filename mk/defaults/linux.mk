@@ -31,7 +31,6 @@ endif
 #(info LINUX_VARIANT_VERSION=$(LINUX_VARIANT_VERSION))
 
 ifeq ($(LINUX_VARIANT),fedora)
-  USE_FIPSCHECK?=true
   USE_LINUX_AUDIT?=true
   USE_SECCOMP?=true
   USE_LABELED_IPSEC?=true
@@ -41,8 +40,3 @@ ifeq ($(LINUX_VARIANT),fedora)
   endif
 endif
 #(info USE_GLIBC_KERN_FLIP_HEADERS=$(USE_GLIBC_KERN_FLIP_HEADERS))
-
-ifndef NSS_CFLAGS
-  NSS_CFLAGS := $(shell pkg-config --cflags nss)
-  export NSS_CFLAGS
-endif

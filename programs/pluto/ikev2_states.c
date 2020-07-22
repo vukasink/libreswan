@@ -34,6 +34,7 @@
 #include "ikev2.h"
 #include "log.h"
 #include "connections.h"
+#include "ikev2_notify.h"
 
 struct finite_state v2_states[] = {
 
@@ -41,6 +42,14 @@ struct finite_state v2_states[] = {
 		.kind = KIND,					\
 		.name = #KIND,					\
 		.short_name = #KIND + 6/*STATE_*/,		\
+		.story = STORY,					\
+		.category = CAT,				\
+	}
+
+#define V2(KIND, STORY, CAT) [KIND - STATE_IKEv2_FLOOR] = {	\
+		.kind = KIND,					\
+		.name = #KIND,					\
+		.short_name = #KIND + 9/*STATE_V2_*/,		\
 		.story = STORY,					\
 		.category = CAT,				\
 	}
@@ -77,33 +86,26 @@ struct finite_state v2_states[] = {
 	S(STATE_V2_IKE_AUTH_CHILD_R0, "ephemeral: responder creating child from IKE exchange", CAT_IGNORE),
 
 	/*
-	 * IKEv1 established states.
-	 *
-	 * XAUTH, seems to a second level of authentication performed
-	 * after the connection is established and authenticated.
+	 * CREATE_CHILD_SA exchanges.
 	 */
 
 	/* isn't this an ipsec state */
-	S(STATE_V2_CREATE_I0, "STATE_V2_CREATE_I0", CAT_ESTABLISHED_IKE_SA),
-	 /* isn't this an ipsec state */
-	S(STATE_V2_CREATE_I, "sent IPsec Child req wait response", CAT_ESTABLISHED_IKE_SA),
-	S(STATE_V2_REKEY_IKE_I0, "STATE_V2_REKEY_IKE_I0", CAT_ESTABLISHED_IKE_SA),
-	S(STATE_V2_REKEY_IKE_I, "STATE_V2_REKEY_IKE_I", CAT_ESTABLISHED_IKE_SA),
+	S(STATE_V2_NEW_CHILD_I0, "STATE_V2_NEW_CHILD_I0", CAT_ESTABLISHED_IKE_SA),
+	S(STATE_V2_NEW_CHILD_I1, "sent IPsec Child req wait response", CAT_ESTABLISHED_IKE_SA),
+	S(STATE_V2_NEW_CHILD_R0, "STATE_V2_NEW_CHILD_R0", CAT_ESTABLISHED_IKE_SA),
 	S(STATE_V2_REKEY_CHILD_I0, "STATE_V2_REKEY_CHILD_I0", CAT_ESTABLISHED_IKE_SA),
-	S(STATE_V2_REKEY_CHILD_I, "STATE_V2_REKEY_CHILD_I", CAT_ESTABLISHED_IKE_SA),
-	S(STATE_V2_CREATE_R0, "STATE_V2_CREATE_R-", CAT_ESTABLISHED_IKE_SA),
-	S(STATE_V2_REKEY_IKE_R0, "STATE_V2_REKEY_IKE_R0", CAT_ESTABLISHED_IKE_SA),
+	S(STATE_V2_REKEY_CHILD_I1, "STATE_V2_REKEY_CHILD_I1", CAT_ESTABLISHED_IKE_SA),
 	S(STATE_V2_REKEY_CHILD_R0, "STATE_V2_REKEY_CHILD_R0", CAT_ESTABLISHED_IKE_SA),
+	S(STATE_V2_REKEY_IKE_I0, "STATE_V2_REKEY_IKE_I0", CAT_ESTABLISHED_IKE_SA),
+	S(STATE_V2_REKEY_IKE_I1, "STATE_V2_REKEY_IKE_I1", CAT_ESTABLISHED_IKE_SA),
+	S(STATE_V2_REKEY_IKE_R0, "STATE_V2_REKEY_IKE_R0", CAT_ESTABLISHED_IKE_SA),
 
 	/*
 	 * IKEv2 established states.
 	 */
 
-	S(STATE_PARENT_I3, "PARENT SA established", CAT_ESTABLISHED_IKE_SA),
-	S(STATE_PARENT_R2, "received v2I2, PARENT SA established", CAT_ESTABLISHED_IKE_SA),
-
-	S(STATE_V2_IPSEC_I, "IPsec SA established", CAT_ESTABLISHED_CHILD_SA),
-	S(STATE_V2_IPSEC_R, "IPsec SA established", CAT_ESTABLISHED_CHILD_SA),
+	V2(STATE_V2_ESTABLISHED_IKE_SA, "established IKE SA", CAT_ESTABLISHED_IKE_SA),
+	V2(STATE_V2_ESTABLISHED_CHILD_SA, "IPsec SA established", CAT_ESTABLISHED_CHILD_SA),
 
 	/* ??? better story needed for these */
 	S(STATE_IKESA_DEL, "STATE_IKESA_DEL", CAT_ESTABLISHED_IKE_SA),
@@ -176,15 +178,8 @@ struct ikev2_payload_errors ikev2_verify_payloads(struct msg_digest *md,
 	}
 
 	if (payloads->notification != v2N_NOTHING_WRONG) {
-		bool found = false;
-		for (struct payload_digest *pd = md->chain[ISAKMP_NEXT_v2N];
-		     pd != NULL; pd = pd->next) {
-			if (pd->payload.v2n.isan_type == payloads->notification) {
-				found = true;
-				break;
-			}
-		}
-		if (!found) {
+		enum v2_pbs v2_pbs = v2_notification_to_v2_pbs(payloads->notification);
+		if (md->pbs[v2_pbs] == NULL) {
 			errors.bad = true;
 			errors.notification = payloads->notification;
 		}
@@ -209,14 +204,10 @@ const struct state_v2_microcode *find_v2_state_transition(struct logger *logger,
 			continue;
 		}
 		/* role? */
-		if (transition->flags & SMF2_MESSAGE_RESPONSE &&
-		    v2_msg_role(md) != MESSAGE_RESPONSE) {
-			dbg("    not a response");
-			continue;
-		}
-		if (transition->flags & SMF2_MESSAGE_REQUEST &&
-		    v2_msg_role(md) != MESSAGE_REQUEST) {
-			dbg("    not a request");
+		if (transition->recv_role != v2_msg_role(md)) {
+			dbg("    not a %s", (transition->recv_role == MESSAGE_REQUEST ? "request" :
+					     transition->recv_role == MESSAGE_RESPONSE ? "response" :
+					     "no-message"));
 			continue;
 		}
 		/* message payloads */
@@ -280,7 +271,7 @@ void log_v2_payload_errors(struct logger *logger, struct msg_digest *md,
 			   const struct ikev2_payload_errors *errors)
 {
 	enum stream log_stream;
-	if (logger->suppress) {
+	if (suppress_log(logger)) {
 		if (DBGP(DBG_BASE)) {
 			log_stream = DEBUG_STREAM;
 		} else {

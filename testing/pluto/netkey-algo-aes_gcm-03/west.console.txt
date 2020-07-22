@@ -7,7 +7,7 @@ destination -I 192.0.1.254 192.0.2.254 is alive
 west #
  # ensure that clear text does not get through
 west #
- iptables -A INPUT -i eth1 -s 192.0.2.0/24 -j LOGDROP
+ iptables -A INPUT -i eth1 -s 192.0.2.0/24 -j DROP
 west #
  iptables -I INPUT -m policy --dir in --pol ipsec -j ACCEPT
 west #
@@ -26,13 +26,13 @@ west #
 west #
  ipsec auto --status
 000 using kernel interface: netkey
+000  
 000 interface lo 127.0.0.1:4500
 000 interface lo 127.0.0.1:500
 000 interface eth0 192.0.1.254:4500
 000 interface eth0 192.0.1.254:500
 000 interface eth1 192.1.2.45:4500
 000 interface eth1 192.1.2.45:500
-000  
 000  
 000 fips mode=disabled;
 000 SElinux=XXXXX
@@ -41,11 +41,9 @@ west #
 000 config setup options:
 000  
 000 configdir=/etc, configfile=/etc/ipsec.conf, secrets=/etc/ipsec.secrets, ipsecdir=/etc/ipsec.d
-000 nssdir=/etc/ipsec.d, dumpdir=/var/tmp, statsbin=unset
-000 dnssec-rootkey-file=/var/lib/unbound/root.key, dnssec-trusted=<unset>
 000 sbindir=PATH/sbin, libexecdir=PATH/libexec/ipsec
 000 nhelpers=-1, uniqueids=yes, dnssec-enable=yes, perpeerlog=no, logappend=no, logip=yes, shuntlifetime=900s, xfrmlifetime=30s
-000 ddos-cookies-threshold=50000, ddos-max-halfopen=25000, ddos-mode=auto
+000 ddos-cookies-threshold=25000, ddos-max-halfopen=50000, ddos-mode=auto
 000 ikeport=500, ikebuf=0, msg_errqueue=yes, strictcrlpolicy=no, crlcheckinterval=0, listen=<any>, nflog-all=0
 000 ocsp-enable=no, ocsp-strict=no, ocsp-timeout=2, ocsp-uri=<unset>
 000 ocsp-trust-name=<unset>
@@ -127,7 +125,7 @@ west #
 000 "westnet-eastnet-gcm":   nflog-group: unset; mark: unset; vti-iface:unset; vti-routing:no; vti-shared:no; nic-offload:auto;
 000 "westnet-eastnet-gcm":   our idtype: ID_FQDN; our id=@west; their idtype: ID_FQDN; their id=@east
 000 "westnet-eastnet-gcm":   dpd: action:hold; delay:0; timeout:0; nat-t: encaps:auto; nat_keepalive:yes; ikev1_natt:both
-000 "westnet-eastnet-gcm":   newest ISAKMP SA: #0; newest IPsec SA: #0;
+000 "westnet-eastnet-gcm":   newest ISAKMP SA: #0; newest IPsec SA: #0; conn serial: $1;
 000 "westnet-eastnet-gcm":   IKE algorithms: AES_CBC_256-HMAC_SHA2_256-MODP2048, AES_CBC_256-HMAC_SHA2_512-MODP2048, AES_CBC_256-HMAC_SHA1-MODP2048, AES_CBC_256-HMAC_SHA2_256-MODP1536, AES_CBC_256-HMAC_SHA2_512-MODP1536, AES_CBC_256-HMAC_SHA1-MODP1536
 000 "westnet-eastnet-gcm":   ESP algorithms: AES_GCM_16-NONE
 000  

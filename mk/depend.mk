@@ -16,22 +16,22 @@
 ifndef OBJS
 $(error define OBJS)
 endif
-# cflags for this variant of the compile command
-ifndef CFLAGS
-$(error define CFLAGS)
-endif
 
 # In addition to compiling the .c file to .o, generate a dependency
 # file.  Force all output to the build directory.  $(basename
 # $(notdir)) is an approximation of UNIX basename.
 #
+# -DHERE_BASENAME is because it is a pita to create a basename from
+#  __FILE__ using a static C expression
 # -MP: add a fake header target for when a header is deleted
 # -MMD: only list user header files
 # -MT: the target (otherwise $(builddir)/$(notdir $@) is used
 # -MF: where to write the dependency
 
 .c.o:
-	$(CC) $(CFLAGS) \
+	$(CC) $(USERLAND_CFLAGS) \
+		$(USERLAND_INCLUDES) \
+		-DHERE_BASENAME=\"$(notdir $<)\" $(CFLAGS) \
 		-MF $(builddir)/$(basename $(notdir $@)).d \
 		-MP -MMD -MT $@ \
 		-o $(builddir)/$(notdir $@) \

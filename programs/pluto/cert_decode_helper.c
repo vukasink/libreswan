@@ -90,7 +90,7 @@ void submit_cert_decode(struct ike_sa *ike, struct state *state_to_resume,
 			.crl_strict = crl_strict,
 		},
 	};
-	submit_crypto(STATE_LOGGER(&ike->sa), state_to_resume,
+	submit_crypto(ike->sa.st_logger, state_to_resume,
 		      clone_thing(task, "decode certificate payload task"),
 		      &cert_decode_handler, why);
 }
@@ -108,7 +108,7 @@ static stf_status cert_decode_completed(struct state *st,
 					struct msg_digest *md,
 					struct crypto_task **task)
 {
-	struct ike_sa *ike = ike_sa(st);
+	struct ike_sa *ike = ike_sa(st, HERE);
 	pexpect(!ike->sa.st_remote_certs.processed);
 	ike->sa.st_remote_certs.processed = true;
 	ike->sa.st_remote_certs.harmless = (*task)->verified.harmless;

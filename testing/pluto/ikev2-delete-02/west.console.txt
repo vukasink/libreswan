@@ -45,7 +45,7 @@ west #
 002 "west-east-delete1" #2: IKEv2 mode peer ID is ID_FQDN: '@east'
 003 "west-east-delete1" #1: authenticated using authby=secret
 002 "west-east-delete1" #2: negotiated connection [192.0.1.0-192.0.1.255:0-65535 0] -> [192.0.2.0-192.0.2.255:0-65535 0]
-004 "west-east-delete1" #2: STATE_V2_IPSEC_I: IPsec SA established tunnel mode {ESP=>0xESPESP <0xESPESP xfrm=AES_GCM_16_256-NONE NATOA=none NATD=none DPD=passive}
+004 "west-east-delete1" #2: STATE_V2_ESTABLISHED_CHILD_SA: IPsec SA established tunnel mode {ESP=>0xESPESP <0xESPESP xfrm=AES_GCM_16_256-NONE NATOA=none NATD=none DPD=passive}
 west #
  ping -n -c 2 -I 192.0.1.254 192.0.2.254
 PING 192.0.2.254 (192.0.2.254) from 192.0.1.254 : 56(84) bytes of data.
@@ -60,13 +60,13 @@ west #
 west #
  ipsec auto --status
 000 using kernel interface: netkey
+000  
 000 interface lo 127.0.0.1:4500
 000 interface lo 127.0.0.1:500
 000 interface eth0 192.0.1.254:4500
 000 interface eth0 192.0.1.254:500
 000 interface eth1 192.1.2.45:4500
 000 interface eth1 192.1.2.45:500
-000  
 000  
 000 fips mode=disabled;
 000 SElinux=XXXXX
@@ -75,11 +75,9 @@ west #
 000 config setup options:
 000  
 000 configdir=/etc, configfile=/etc/ipsec.conf, secrets=/etc/ipsec.secrets, ipsecdir=/etc/ipsec.d
-000 nssdir=/etc/ipsec.d, dumpdir=/run/pluto, statsbin=unset
-000 dnssec-rootkey-file=/var/lib/unbound/root.key, dnssec-trusted=<unset>
 000 sbindir=PATH/sbin, libexecdir=PATH/libexec/ipsec
 000 nhelpers=-1, uniqueids=yes, dnssec-enable=yes, perpeerlog=no, logappend=no, logip=yes, shuntlifetime=900s, xfrmlifetime=30s
-000 ddos-cookies-threshold=50000, ddos-max-halfopen=25000, ddos-mode=auto
+000 ddos-cookies-threshold=25000, ddos-max-halfopen=50000, ddos-mode=auto
 000 ikeport=500, ikebuf=0, msg_errqueue=yes, strictcrlpolicy=no, crlcheckinterval=0, listen=<any>, nflog-all=0
 000 ocsp-enable=no, ocsp-strict=no, ocsp-timeout=2, ocsp-uri=<unset>
 000 ocsp-trust-name=<unset>
@@ -162,7 +160,7 @@ west #
 000 "west-east-delete1":   nflog-group: unset; mark: unset; vti-iface:unset; vti-routing:no; vti-shared:no; nic-offload:auto;
 000 "west-east-delete1":   our idtype: ID_FQDN; our id=@west; their idtype: ID_FQDN; their id=@east
 000 "west-east-delete1":   dpd: action:hold; delay:0; timeout:0; nat-t: encaps:auto; nat_keepalive:yes; ikev1_natt:both
-000 "west-east-delete1":   newest ISAKMP SA: #1; newest IPsec SA: #2;
+000 "west-east-delete1":   newest ISAKMP SA: #1; newest IPsec SA: #2; conn serial: $1;
 000 "west-east-delete1":   IKEv2 algorithm newest: AES_GCM_16_256-HMAC_SHA2_512-MODP2048
 000 "west-east-delete1":   ESP algorithm newest: AES_GCM_16_256-NONE; pfsgroup=<Phase1>
 000  
@@ -172,9 +170,9 @@ west #
 000 IKE SAs: total(1), half-open(0), open(0), authenticated(1), anonymous(0)
 000 IPsec SAs: total(1), authenticated(1), anonymous(0)
 000  
-000 #1: "west-east-delete1":500 STATE_PARENT_I3 (PARENT SA established); EVENT_SA_REKEY in XXs; newest ISAKMP; idle;
-000 #2: "west-east-delete1":500 STATE_V2_IPSEC_I (IPsec SA established); EVENT_SA_REKEY in XXs; newest IPSEC; eroute owner; isakmp#1; idle;
-000 #2: "west-east-delete1" esp.ESPSPIi@192.1.2.23 esp.ESPSPIi@192.1.2.45 tun.0@192.1.2.23 tun.0@192.1.2.45 ref=0 refhim=0 Traffic: ESPin=168B ESPout=168B! ESPmax=0B 
+000 #1: "west-east-delete1":500 STATE_V2_ESTABLISHED_IKE_SA (established IKE SA); EVENT_SA_REKEY in XXs; newest ISAKMP; idle;
+000 #2: "west-east-delete1":500 STATE_V2_ESTABLISHED_CHILD_SA (IPsec SA established); EVENT_SA_REKEY in XXs; newest IPSEC; eroute owner; isakmp#1; idle;
+000 #2: "west-east-delete1" esp.ESPSPIi@192.1.2.23 esp.ESPSPIi@192.1.2.45 tun.0@192.1.2.23 tun.0@192.1.2.45 Traffic: ESPin=168B ESPout=168B! ESPmax=0B 
 000  
 000 Bare Shunt list:
 000  
@@ -185,7 +183,7 @@ west #
  sleep 2
 west #
  ipsec whack --deletestate 2
-002 "west-east-delete1" #2: deleting state (STATE_V2_IPSEC_I) and sending notification
+002 "west-east-delete1" #2: deleting state (STATE_V2_ESTABLISHED_CHILD_SA) and sending notification
 005 "west-east-delete1" #2: ESP traffic information: in=168B out=168B
 west #
  echo "sleeping a bit.. 2"
@@ -195,13 +193,13 @@ west #
 west #
  ipsec auto --status
 000 using kernel interface: netkey
+000  
 000 interface lo 127.0.0.1:4500
 000 interface lo 127.0.0.1:500
 000 interface eth0 192.0.1.254:4500
 000 interface eth0 192.0.1.254:500
 000 interface eth1 192.1.2.45:4500
 000 interface eth1 192.1.2.45:500
-000  
 000  
 000 fips mode=disabled;
 000 SElinux=XXXXX
@@ -210,11 +208,9 @@ west #
 000 config setup options:
 000  
 000 configdir=/etc, configfile=/etc/ipsec.conf, secrets=/etc/ipsec.secrets, ipsecdir=/etc/ipsec.d
-000 nssdir=/etc/ipsec.d, dumpdir=/run/pluto, statsbin=unset
-000 dnssec-rootkey-file=/var/lib/unbound/root.key, dnssec-trusted=<unset>
 000 sbindir=PATH/sbin, libexecdir=PATH/libexec/ipsec
 000 nhelpers=-1, uniqueids=yes, dnssec-enable=yes, perpeerlog=no, logappend=no, logip=yes, shuntlifetime=900s, xfrmlifetime=30s
-000 ddos-cookies-threshold=50000, ddos-max-halfopen=25000, ddos-mode=auto
+000 ddos-cookies-threshold=25000, ddos-max-halfopen=50000, ddos-mode=auto
 000 ikeport=500, ikebuf=0, msg_errqueue=yes, strictcrlpolicy=no, crlcheckinterval=0, listen=<any>, nflog-all=0
 000 ocsp-enable=no, ocsp-strict=no, ocsp-timeout=2, ocsp-uri=<unset>
 000 ocsp-trust-name=<unset>
@@ -297,7 +293,7 @@ west #
 000 "west-east-delete1":   nflog-group: unset; mark: unset; vti-iface:unset; vti-routing:no; vti-shared:no; nic-offload:auto;
 000 "west-east-delete1":   our idtype: ID_FQDN; our id=@west; their idtype: ID_FQDN; their id=@east
 000 "west-east-delete1":   dpd: action:hold; delay:0; timeout:0; nat-t: encaps:auto; nat_keepalive:yes; ikev1_natt:both
-000 "west-east-delete1":   newest ISAKMP SA: #1; newest IPsec SA: #0;
+000 "west-east-delete1":   newest ISAKMP SA: #1; newest IPsec SA: #0; conn serial: $1;
 000 "west-east-delete1":   IKEv2 algorithm newest: AES_GCM_16_256-HMAC_SHA2_512-MODP2048
 000  
 000 Total IPsec connections: loaded 1, active 0
@@ -306,7 +302,7 @@ west #
 000 IKE SAs: total(1), half-open(0), open(0), authenticated(1), anonymous(0)
 000 IPsec SAs: total(0), authenticated(0), anonymous(0)
 000  
-000 #1: "west-east-delete1":500 STATE_PARENT_I3 (PARENT SA established); EVENT_SA_REKEY in XXs; newest ISAKMP; idle;
+000 #1: "west-east-delete1":500 STATE_V2_ESTABLISHED_IKE_SA (established IKE SA); EVENT_SA_REKEY in XXs; newest ISAKMP; idle;
 000  
 000 Bare Shunt list:
 000  
@@ -315,20 +311,20 @@ west #
 sleeping a bit.. 2
 west #
  ipsec whack --deletestate 1
-002 "west-east-delete1" #1: deleting state (STATE_PARENT_I3) and sending notification
+002 "west-east-delete1" #1: deleting state (STATE_V2_ESTABLISHED_IKE_SA) and sending notification
 002 "west-east-delete1" #1: IMPAIR: skipping revival of connection that is supposed to remain up
 west #
  sleep 2
 west #
  ipsec auto --status
 000 using kernel interface: netkey
+000  
 000 interface lo 127.0.0.1:4500
 000 interface lo 127.0.0.1:500
 000 interface eth0 192.0.1.254:4500
 000 interface eth0 192.0.1.254:500
 000 interface eth1 192.1.2.45:4500
 000 interface eth1 192.1.2.45:500
-000  
 000  
 000 fips mode=disabled;
 000 SElinux=XXXXX
@@ -337,11 +333,9 @@ west #
 000 config setup options:
 000  
 000 configdir=/etc, configfile=/etc/ipsec.conf, secrets=/etc/ipsec.secrets, ipsecdir=/etc/ipsec.d
-000 nssdir=/etc/ipsec.d, dumpdir=/run/pluto, statsbin=unset
-000 dnssec-rootkey-file=/var/lib/unbound/root.key, dnssec-trusted=<unset>
 000 sbindir=PATH/sbin, libexecdir=PATH/libexec/ipsec
 000 nhelpers=-1, uniqueids=yes, dnssec-enable=yes, perpeerlog=no, logappend=no, logip=yes, shuntlifetime=900s, xfrmlifetime=30s
-000 ddos-cookies-threshold=50000, ddos-max-halfopen=25000, ddos-mode=auto
+000 ddos-cookies-threshold=25000, ddos-max-halfopen=50000, ddos-mode=auto
 000 ikeport=500, ikebuf=0, msg_errqueue=yes, strictcrlpolicy=no, crlcheckinterval=0, listen=<any>, nflog-all=0
 000 ocsp-enable=no, ocsp-strict=no, ocsp-timeout=2, ocsp-uri=<unset>
 000 ocsp-trust-name=<unset>
@@ -424,7 +418,7 @@ west #
 000 "west-east-delete1":   nflog-group: unset; mark: unset; vti-iface:unset; vti-routing:no; vti-shared:no; nic-offload:auto;
 000 "west-east-delete1":   our idtype: ID_FQDN; our id=@west; their idtype: ID_FQDN; their id=@east
 000 "west-east-delete1":   dpd: action:hold; delay:0; timeout:0; nat-t: encaps:auto; nat_keepalive:yes; ikev1_natt:both
-000 "west-east-delete1":   newest ISAKMP SA: #0; newest IPsec SA: #0;
+000 "west-east-delete1":   newest ISAKMP SA: #0; newest IPsec SA: #0; conn serial: $1;
 000  
 000 Total IPsec connections: loaded 1, active 0
 000  

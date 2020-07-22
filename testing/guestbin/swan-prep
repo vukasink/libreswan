@@ -66,7 +66,7 @@ def mount_bind(src, dst, mode=None, touch_src_file=False, mkdir_src=False, wipe_
                  % (src, dst, mode_str))
         return True
 
-    cmd = ['/usr/bin/mount', '--bind',  src, dst]
+    cmd = ['/bin/mount', '--bind',  src, dst]
 
     o = subprocess.run(cmd, stderr=subprocess.PIPE, stdout=subprocess.PIPE,
                         encoding='utf-8')
@@ -92,7 +92,7 @@ def lsw_cp_file(src, dst, mode=None, nsbasepath=''):
 
 def umount(dst):
     if os.path.isdir(dst) or os.path.isfile(dst):
-        subprocess.getoutput("/usr/bin/umount %s" % dst)
+        subprocess.getoutput("/bin/umount %s" % dst)
     else:
         if os.path.islink(dst):
             os.unlink(dst)
@@ -285,7 +285,7 @@ if os.path.isfile("/lib/systemd/system/ipsec.service") and not args.namespace:
         fp = open("/lib/systemd/system/ipsec.service", "w")
         fp.write("".join(service).replace("Restart=always", "Restart=no"))
     # always reload to avoid "service is masked" errors
-    subprocess.getoutput("/usr/bin/systemctl daemon-reload")
+    subprocess.getoutput("/bin/systemctl daemon-reload")
 
 # AA_201902 what happens to audit log namespace
 # we have to cleanup the audit log or we could get entries from previous test
@@ -293,12 +293,15 @@ if os.path.isfile("/var/log/audit/audit.log"):
     fp = open("/var/log/audit/audit.log", "w")
     fp.close()
     if os.path.isfile("/lib/systemd/system/auditd.service"):
-        subprocess.getoutput("/usr/bin/systemctl restart auditd.service")
+        subprocess.getoutput("/bin/systemctl restart auditd.service")
 
 # disable some daemons that could cause noise packets getting encrypted
 if not args.namespace :
-    subprocess.getoutput("/usr/bin/systemctl stop chronyd")
-    subprocess.getoutput("/usr/bin/systemctl stop sssd")
+    subprocess.getoutput("/bin/systemctl stop chronyd")
+    subprocess.getoutput("/bin/systemctl stop sssd")
+
+# work around for ACQUIRE losing sub-type, causing false positive test results
+subprocess.getoutput('sysctl net.ipv4.ping_group_range="1 0"')
 
 # ensure cores are just dropped, not sent to aobrt-hook-ccpp or systemd.
 # setting /proc/sys/kernel/core_pattern to "core" or a pattern does not
@@ -321,6 +324,10 @@ if hostname != "nic":
     if args.namespace :
         if mount_bind(src, dst, mkdir_src=True,  wipe_old_dst=True):
             sys.exit(1)
+        if os.path.isdir("/var/lib/ipsec/nss"):
+            dst = "/var/lib/ipsec/nss"
+            if mount_bind(src, dst, mkdir_src=True,  wipe_old_dst=True):
+                sys.exit(1)
 
     if args.userland in ("libreswan", "openswan"):
         dst = "/run/pluto"
@@ -354,27 +361,26 @@ if hostname != "nic":
             for dbfile in dbfiles:
                 os.chown(dbfile, 0, 0)
 
-    elif args.userland in ("strongswan"):
-        prefix = "strongswan/"
-        dst = "/etc/strongswan/ipsec.d"
-        if not os.path.isdir(dst):
-            os.mkdir(dst)
+    elif args.userland == "strongswan":
 
-    # test specific files
-    xl2tpdconf = "%s/%s.xl2tpd.conf" % (testpath, hostname)
-    pppoptions = "%s/%s.ppp-options.xl2tpd" % (testpath, hostname)
-    chapfile = "%s/chap-secrets" % testpath
-
-    ipsecconf = choose_conf_file(hostname, testpath, "ipsec.conf", "%s.conf" % (hostname), args.userland)
-    ipsecsecrets = choose_conf_file(hostname, testpath, "ipsec.secrets", "%s.secrets" % (hostname), args.userland)
-
-    if args.userland == "strongswan":
-        # check version and fail early
+        # check version and spew all over test output
         output = subprocess.getoutput("strongswan version")
-        if not "U5.8.2" in output:
-            sys.exit("strongswan 5.8.2 must be installed")
+        if not "U5.8.4" in output:
+            print("strongswan 5.8.4 must be installed")
+            print("")
+            print(output)
+
         # required to write log file in /tmp
         subprocess.getoutput("setenforce 0")
+
+        # wipe the strongswan tree
+        prefix = "strongswan/"
+        dst = "/etc/strongswan/"
+        if os.path.isdir(dst):
+            shutil.rmtree(dst)
+        for directory in ("", "ipsec.d/", "ipsec.d/aacerts/", "ipsec.d/ocspcerts/", "ipsec.d/cacerts/", "ipsec.d/private/", "ipsec.d/certs/"):
+            os.mkdir("%s%s" % (dst, directory))
+
         strongswanconf = choose_conf_file(hostname, testpath, "strongswan.conf", "%sstrongswan.conf" % (hostname), args.userland)
         if strongswanconf:
             shutil.copy(strongswanconf, "/etc/strongswan/strongswan.conf")
@@ -386,9 +392,13 @@ if hostname != "nic":
                 os.mkdir(dst)
             shutil.copy(swanctlconf, "%s/swanctl.conf" % (dst))
 
-        for dir in ("/etc/strongswan/ipsec.d/aacerts", "/etc/strongswan/ipsec.d/ocspcerts"):
-            if not os.path.isdir(dir):
-                os.mkdir(dir)
+    # test specific files
+    xl2tpdconf = "%s/%s.xl2tpd.conf" % (testpath, hostname)
+    pppoptions = "%s/%s.ppp-options.xl2tpd" % (testpath, hostname)
+    chapfile = "%s/chap-secrets" % testpath
+
+    ipsecconf = choose_conf_file(hostname, testpath, "ipsec.conf", "%s.conf" % (hostname), args.userland)
+    ipsecsecrets = choose_conf_file(hostname, testpath, "ipsec.secrets", "%s.secrets" % (hostname), args.userland)
 
     dstconf = "/etc/%sipsec.conf" % (prefix)
     dstsecrets = "/etc/%sipsec.secrets" % (prefix)
@@ -419,7 +429,7 @@ sysconfigd = "%s/etc/sysconfig" % (nsbasepath)
 if not os.path.isdir(sysconfigd):
     os.makedirs(sysconfigd)
 
-if args.userland in ("libreswan", "openswan") and hostname != "nic":
+if args.userland in ("libreswan", "openswan") and hostname != "nic" and not args.namespace:
     if args.fips and args.userland in ("libreswan", "openswan"):
         # the test also requires using a modutil cmd which we cannot run here
         shutil.copyfile("/testing/baseconfigs/all/etc/sysconfig/pluto.fips", "/etc/sysconfig/pluto")
@@ -473,9 +483,6 @@ if userland in ("libreswan", "openswan"):
 
     # this section is getting rough. could use a nice refactoring
     if args.x509:
-        if userland == "strongswan":
-            shutil.rmtree("/etc/strongswan/ipsec.d/cacerts/")
-            os.mkdir("/etc/strongswan/ipsec.d/cacerts/")
 
         if not os.path.isfile("/testing/x509/keys/mainca.key"):
             print("\n\n---------------------------------------------------------------------\n"

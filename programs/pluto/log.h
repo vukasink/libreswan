@@ -1,4 +1,4 @@
-/* logging declarations
+/* logging declarations, for libreswan's pluto
  *
  * Copyright (C) 1998-2001  D. Hugh Redelmeier.
  * Copyright (C) 2004 Michael Richardson <mcr@xelerance.com>
@@ -31,9 +31,10 @@ struct state;
 struct connection;
 struct msg_digest;
 struct pending;
+struct show;
 
 /* moved common code to library file */
-#include "libreswan/passert.h"
+#include "passert.h"
 
 extern bool
 	log_with_timestamp,     /* prefix timestamp */
@@ -52,7 +53,7 @@ extern char *pluto_stats_binary;
  * If the context provides a whack file descriptor, messages
  * should be copied to it -- see whack_log()
  */
-extern const struct fd *whack_log_fd;                        /* only set during whack_handle() */
+extern struct fd *whack_log_fd;           /* only set during whack_handle() */
 
 extern bool whack_prompt_for(struct state *st, const char *prompt,
 			     bool echo, char *ansbuf, size_t ansbuf_len);
@@ -96,116 +97,61 @@ extern void log_pop_from(ip_address old_from, where_t where);
 
 struct logger cur_logger(void);
 
-/*
- * Broadcast a log message.
- *
- * By default send it to the log file and any attached whacks (both
- * globally and the object).
- *
- * If any *_STREAM flag is specified then only send the message to
- * that stream.
- *
- * log_message() is a catch-all for code that may or may not have ST.
- * For instance a responder decoding a message may not yet have
- * created the state.  It will will use ST, MD, or nothing as the
- * prefix, and logs to ST's whackfd when possible.
- */
-
-typedef void jam_prefix_fn(jambuf_t *buf, const void *object);
-
-jam_prefix_fn jam_global_prefix;
-jam_prefix_fn jam_from_prefix;
-jam_prefix_fn jam_message_prefix;
-jam_prefix_fn jam_connection_prefix;
-jam_prefix_fn jam_state_prefix;
-jam_prefix_fn jam_string_prefix;
-
-struct logger {
-	const struct fd *global_whackfd;
-	const struct fd *object_whackfd;
-	const void *object;
-	jam_prefix_fn *jam_prefix;
-	where_t where;
-	/* used by timing to nest its logging output */
-	int timing_level;
-	/*
-	 * When opportunistic encryption or the initial responder, for
-	 * instance, some logging is suppressed.
-	 */
-	bool suppress;
-};
+extern const struct logger_object_vec logger_global_vec;
+extern const struct logger_object_vec logger_from_vec;
+extern const struct logger_object_vec logger_message_vec;
+extern const struct logger_object_vec logger_connection_vec;
+extern const struct logger_object_vec logger_state_vec;
 
 #define GLOBAL_LOGGER(WHACKFD) (struct logger)			\
 	{							\
 		.where = HERE,					\
 		.global_whackfd = WHACKFD,			\
-		.jam_prefix = jam_global_prefix,		\
+		.object = NULL,					\
+		.object_vec = &logger_global_vec,		\
 	}
 #define FROM_LOGGER(FROM) (struct logger)			\
 	{							\
 		.where = HERE,					\
 		.global_whackfd = null_fd,			\
-		.jam_prefix = jam_from_prefix,			\
 		.object = FROM,					\
-		.suppress = true,				\
+		.object_vec = &logger_from_vec, 		\
 	}
 #define MESSAGE_LOGGER(MD) (struct logger)			\
 	{							\
 		.where = HERE,					\
 		.global_whackfd = null_fd,			\
-		.jam_prefix = jam_message_prefix,		\
 		.object = MD,					\
-		.suppress = true,				\
+		.object_vec = &logger_message_vec,		\
 	}
 #define CONNECTION_LOGGER(CONNECTION, WHACKFD) (struct logger)	\
 	{							\
 		.where = HERE,					\
 		.global_whackfd = WHACKFD,			\
-		.jam_prefix = jam_connection_prefix,		\
 		.object = CONNECTION,				\
-		.suppress = CONNECTION->policy & POLICY_OPPORTUNISTIC, \
+		.object_vec = &logger_connection_vec,		\
 	}
 #define PENDING_LOGGER(PENDING) (struct logger)			\
 	{							\
 		.where = HERE,					\
 		.global_whackfd = whack_log_fd,			\
-		.jam_prefix = jam_connection_prefix,		\
-		.object = (PENDING)->connection,		\
 		.object_whackfd = (PENDING)->whack_sock,	\
-		.suppress = (PENDING)->connection->policy & POLICY_OPPORTUNISTIC, \
-	}
-#define STATE_LOGGER(STATE) (struct logger)			\
-	{							\
-		.where = HERE,					\
-		.global_whackfd = whack_log_fd,			\
-		.jam_prefix = jam_state_prefix,			\
-		.object = STATE,				\
-		.object_whackfd = (STATE)->st_whack_sock,	\
-		.timing_level = (STATE)->st_timing.level,	\
-		.suppress = (STATE)->st_connection->policy & POLICY_OPPORTUNISTIC, \
+		.object = (PENDING)->connection,		\
+		.object_vec = &logger_connection_vec,		\
 	}
 
-struct logger *clone_logger(struct logger log);
+struct logger *clone_logger(const struct logger *stack);
 void free_logger(struct logger **logp);
 
-void log_message(lset_t rc_flags,
-		 const struct logger *log,
-		 const char *format, ...) PRINTF_LIKE(3);
-
-void jambuf_to_log(jambuf_t *buf, const struct logger *logger, lset_t rc_flags);
-
-#define LOG_MESSAGE(RC_FLAGS, LOGGER, BUF)				\
-	LSWLOG_(true, BUF,						\
-		(LOGGER)->jam_prefix(BUF, (LOGGER)->object),		\
-		jambuf_to_log(BUF, (LOGGER), RC_FLAGS))
-
-void log_pending(lset_t rc_flags,
-		 const struct pending *pending,
-		 const char *format, ...) PRINTF_LIKE(3);
-
-void log_state(lset_t rc_flags,
-	       const struct state *st,
-	       const char *format, ...)	PRINTF_LIKE(3);
+#define log_verbose(RC_FLAGS, LOGGER, FORMAT, ...)			\
+	{								\
+		if (suppress_log(LOGGER)) {				\
+			dbg(FORMAT, ##__VA_ARGS__);			\
+		} else {						\
+			log_message(RC_FLAGS, LOGGER, FORMAT,		\
+				    ##__VA_ARGS__);			\
+		}							\
+	}
 
 /*
  * Log with no context.
@@ -214,35 +160,36 @@ void log_state(lset_t rc_flags,
  * attached).
  */
 
-#define plog_global(MESSAGE, ...)					\
-	{								\
-		struct logger log_ = GLOBAL_LOGGER(null_fd);		\
-		log_message(LOG_STREAM, &log_,				\
-			    MESSAGE,##__VA_ARGS__);			\
-	}
-
-#define loglog_global(RC, WHACKFD, MESSAGE, ...)			\
+#define log_global(RC, WHACKFD, MESSAGE, ...)				\
 	{								\
 		struct logger log_ = GLOBAL_LOGGER(WHACKFD);		\
 		log_message(RC,	&log_,					\
 			    MESSAGE,##__VA_ARGS__);			\
 	}
 
+#define plog_global(MESSAGE, ...) log_global(LOG_STREAM, null_fd, MESSAGE, ##__VA_ARGS__)
+#define loglog_global log_global
+
 /*
- * XXX: log_md() should never be called directly - *log_md() is only
- * useful when in the packet (MD) event handler.  Since this means it
- * isn't in the whack event handler there can't be a whack calling
- * log_md(RC) is useless.
+ * The message digest.
+ *
+ * Since MD code is only ever executed when on the socket handler,
+ * isn't WHACK_FD always NULL and hence RC_FLAGS uses.  Almost:
+ *
+ * - dbg_md() uses it to signal that it is a debug log
+ * - any event injection will likely want to attach a whack fd
+ *
+ * and it is just easier.
  */
 
-void log_md(lset_t rc_flags,
-	    const struct msg_digest *md,
-	    const char *format, ...) PRINTF_LIKE(3);
-#define plog_md(MD, MESSAGE, ...) log_md(LOG_STREAM, MD, MESSAGE,##__VA_ARGS__)
+void log_md(lset_t rc_flags, const struct msg_digest *md,
+	    const char *msg, ...) PRINTF_LIKE(3);
+
 #define dbg_md(MD, MESSAGE, ...)					\
 	{								\
 		if (DBGP(DBG_BASE)) {					\
-			log_md(DEBUG_STREAM, MD, MESSAGE,##__VA_ARGS__); \
+			log_md(DEBUG_STREAM, MD,			\
+			       MESSAGE,##__VA_ARGS__);			\
 		}							\
 	}
 
@@ -257,12 +204,49 @@ void log_md(lset_t rc_flags,
  * a state or pending struct.
  */
 
-void log_connection(lset_t rc_flags, struct fd *whackfd,
-		    const struct connection *c,
-		    const char *format, ...) PRINTF_LIKE(4);
+void log_connection(lset_t rc_flags, struct fd *whackfd, const struct connection *c,
+		    const char *msg, ...) PRINTF_LIKE(4);
 
-#define plog_connection(C, MESSAGE, ...)				\
-	log_connection(LOG_STREAM, null_fd, C, MESSAGE,##__VA_ARGS__)
+#if 0
+#define dbg_connection(C, FORMAT, ...)					\
+	{								\
+		if (DBGP(DBG_BASE)) {					\
+			log_connection(DEBUG_STREAM, null_fd, C,	\
+				       FORMAT, ##__VA_ARGS__);		\
+		}							\
+	}
+#endif
+
+void log_pending(lset_t rc_flags, const struct pending *p,
+		 const char *msg, ...) PRINTF_LIKE(3);
+
+#if 0
+#define dbg_pending(PENDING, FORMAT, ...)				\
+	{								\
+		if (DBGP(DBG_BASE)) {					\
+			log_pending(DEBUG_STREAM, PENDING,		\
+				    FORMAT, ##__VA_ARGS__);		\
+		}							\
+	}
+#endif
+
+/*
+ * log the state; notice how it still needs to pick up the global
+ * whackfd.
+ */
+
+void log_state(lset_t rc_flags, const struct state *st,
+	       const char *msg, ...) PRINTF_LIKE(3);
+
+#if 0
+#define dbg_state(ST, FORMAT, ...)					\
+	{								\
+		if (DBGP(DBG_BASE)) {					\
+			log_state(DEBUG_STREAM, ST,			\
+				  FORMAT, ##__VA_ARGS__);		\
+		}							\
+	}
+#endif
 
 /*
  * Wrappers.
@@ -280,8 +264,6 @@ void log_connection(lset_t rc_flags, struct fd *whackfd,
  * with whack_log() and manually add the prefix as needed.
  */
 
-#define plog_state(ST, MESSAGE, ...) log_state(LOG_STREAM, ST, MESSAGE,##__VA_ARGS__);
-
 /*
  * rate limited logging
  */
@@ -291,11 +273,6 @@ void rate_log(const struct msg_digest *md,
 /*
  * Log 'cur' directly (without setting it first).
  */
-
-void jam_log_prefix(struct lswlog *buf,
-		    const struct state *st,
-		    const struct connection *c,
-		    const ip_address *from);
 
 extern void pluto_init_log(void);
 void init_rate_log(void);
@@ -329,10 +306,10 @@ void jambuf_to_whack(jambuf_t *buf, const struct fd *whackfd, enum rc_type rc);
 		/*NO-PREFIX*/,						\
 		jambuf_to_whack(BUF, WHACKFD, RC))
 
-extern void show_status(const struct fd *whackfd);
-extern void show_setup_plutomain(const struct fd *whackfd);
-extern void show_setup_natt(const struct fd *whackfd);
-extern void show_global_status(const struct fd *whackfd);
+extern void show_status(struct show *s);
+extern void show_setup_plutomain(struct show *s);
+extern void show_setup_natt(struct show *s);
+extern void show_global_status(struct show *s);
 
 enum linux_audit_kind {
 	LAK_PARENT_START,

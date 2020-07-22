@@ -220,11 +220,13 @@ extern shunk_t pbs_in_left_as_shunk(const pb_stream *pbs);
 
 extern bool in_struct(void *struct_ptr, struct_desc *sd,
 		      pb_stream *ins, pb_stream *obj_pbs) MUST_USE_RESULT;
-extern bool in_raw(void *bytes, size_t len, pb_stream *ins, const char *name) MUST_USE_RESULT;
-
 bool pbs_in_struct(struct pbs_in *ins,
 		   void *struct_ptr, size_t struct_size, struct_desc *sd,
 		   struct pbs_in *obj_pbs, struct logger *logger) MUST_USE_RESULT;
+
+extern bool in_raw(void *bytes, size_t len, pb_stream *ins, const char *name) MUST_USE_RESULT; /* XXX: use pbs_in_raw() */
+bool pbs_in_raw(struct pbs_in *pbs, void *bytes, size_t len,
+		const char *name, struct logger *logger) MUST_USE_RESULT;
 
 /*
  * Output PBS
@@ -253,7 +255,10 @@ extern pb_stream open_out_pbs(const char *name, uint8_t *buffer,
 extern chunk_t same_out_pbs_as_chunk(pb_stream *pbs);
 extern chunk_t clone_out_pbs_as_chunk(pb_stream *pbs, const char *name);
 
-extern bool out_struct(const void *struct_ptr, struct_desc *sd,
+bool pbs_out_struct(struct pbs_out *outs,
+		    const void *struct_ptr, size_t struct_size, struct_desc *sd,
+		    struct pbs_out *obj_pbs, struct logger *logger) MUST_USE_RESULT;
+extern bool out_struct(const void *struct_ptr, struct_desc *sd, /* use pbs_out_struct() */
 		       pb_stream *outs, pb_stream *obj_pbs) MUST_USE_RESULT;
 extern pb_stream open_output_struct_pbs(pb_stream *outs, const void *struct_ptr,
 				 struct_desc *sd) MUST_USE_RESULT;
@@ -958,7 +963,8 @@ struct ikev2_id {
 	uint16_t isai_length;		/* Payload length */
 	uint8_t isai_type;		/* ID type */
 	uint8_t isai_res1;
-	uint16_t isai_res2;
+	uint8_t isai_res2;
+	uint8_t isai_res3;
 };
 extern struct_desc ikev2_id_i_desc;
 extern struct_desc ikev2_id_r_desc;

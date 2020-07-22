@@ -1,4 +1,4 @@
-# Libreswan pathnames and other master configuration
+# Libreswan configuration
 #
 # Copyright (C) 2001, 2002  Henry Spencer.
 # Copyright (C) 2003-2006   Xelerance Corporation
@@ -69,6 +69,50 @@ include ${LIBRESWANSRCDIR}/mk/defaults/${BUILDENV}.mk
 #
 # Note: Variables here are for Makefiles and build system only.
 # IPSEC_ prefixed variables are to be used in source code
+
+# -D... goes in here
+USERLAND_CFLAGS += -pthread
+
+# should this go in CFLAGS?
+USERLAND_CFLAGS += -std=gnu99
+
+#
+# Options that really belong in CFLAGS (making for an intuitive way to
+# override them).
+#
+# Unfortunately this file is shared with the kernel which seems to
+# have its own ideas on CFLAGS.
+#
+
+DEBUG_CFLAGS ?= -g
+USERLAND_CFLAGS += $(DEBUG_CFLAGS)
+
+# eventually: -Wshadow -pedantic?
+WERROR_CFLAGS ?= -Werror
+USERLAND_CFLAGS += $(WERROR_CFLAGS)
+WARNING_CFLAGS ?= -Wall -Wextra -Wformat -Wformat-nonliteral -Wformat-security -Wundef -Wmissing-declarations -Wredundant-decls -Wnested-externs
+USERLAND_CFLAGS += $(WARNING_CFLAGS)
+
+# _FORTIFY_SOURCE requires at least -O.  Gentoo, pre-defines
+# _FORTIFY_SOURCE (to what? who knows!); force it to our preferred
+# value.
+OPTIMIZE_CFLAGS ?= -O2 -U_FORTIFY_SOURCE -D_FORTIFY_SOURCE=2
+USERLAND_CFLAGS += $(OPTIMIZE_CFLAGS)
+
+# Dumping ground for an arbitrary set of flags.  Should probably be
+# separated out.
+USERCOMPILE ?= -fstack-protector-all -fno-strict-aliasing -fPIE -DPIE
+USERLAND_CFLAGS += $(USERCOMPILE)
+
+# Basic linking flags
+USERLINK ?= -Wl,-z,relro,-z,now -pie
+USERLAND_LDFLAGS += -Wl,--as-needed
+USERLAND_LDFLAGS += $(USERLINK) $(ASAN)
+
+# Accumulate values in these fields.
+# is -pthread CFLAG or LDFLAG
+USERLAND_INCLUDES += -I$(srcdir) -I$(builddir) -I$(top_srcdir)/include
+
 
 ### install pathnames
 
@@ -227,12 +271,11 @@ MODPROBEARGS ?= --quiet --use-blacklist
 INSTALL ?= install
 
 # flags to the install program, for programs, manpages, and config
-# files -b has install make backups (n.b., unlinks original), --suffix
-# controls how backup names are composed.  Since install procedures
-# will never overwrite an existing config file they omit -b.
+# files -b has install make backups (n.b., unlinks original) (let
+# install choose the suffix).  Since install procedures will never
+# overwrite an existing config file they omit -b.
 
-# While --suffix is linux centric, there isn't a portable alternative.
-INSTBINFLAGS ?= -b --suffix=.old
+INSTBINFLAGS ?= -b
 
 # The -m flag is more portable than --mode=.
 INSTMANFLAGS ?= -m 0644
@@ -241,10 +284,16 @@ INSTCONFFLAGS ?= -m 0644
 # flags for bison, overrode in packages/default/foo
 BISONOSFLAGS ?=
 
-# XXX: Don't add NSSFLAGS to USERLAND_CFLAGS for now.  It needs to go
-# after -I$(top_srcdir)/include and fixing that is an entirely
-# separate cleanup.
-NSSFLAGS ?= $(NSS_CFLAGS)
+# must be before all uses; invoking is expensive called once
+PKG_CONFIG ?= pkg-config
+
+# XXX: Append NSS_CFLAGS to USERLAND_INCLUDES which puts it after
+# -I$(top_srcdir)/include; expanded on every compile so invoke once.
+ifndef NSS_CFLAGS
+NSS_CFLAGS := $(shell $(PKG_CONFIG) --cflags nss)
+endif
+USERLAND_INCLUDES += $(NSS_CFLAGS)
+
 # We don't want to link against every library pkg-config --libs nss
 # returns
 NSS_LDFLAGS ?= -lnss3
@@ -257,7 +306,7 @@ NSPR_LDFLAGS ?= -lnspr4
 # This work-around is needed with nss versions before 3.30.
 USE_NSS_AVA_COPY ?= false
 ifeq ($(USE_NSS_AVA_COPY),true)
-NSSFLAGS += -DNSS_REQ_AVA_COPY
+USERLAND_CFLAGS += -DNSS_REQ_AVA_COPY
 endif
 
 # Use nss IPsec profile for X509 validation. This is less restrictive
@@ -265,7 +314,7 @@ endif
 # See https://bugzilla.mozilla.org/show_bug.cgi?id=1252891
 USE_NSS_IPSEC_PROFILE ?= true
 ifeq ($(USE_NSS_IPSEC_PROFILE),true)
-NSSFLAGS += -DNSS_IPSEC_PROFILE
+USERLAND_CFLAGS += -DNSS_IPSEC_PROFILE
 endif
 
 # Use a local copy of xfrm.h. This can be needed on older systems
@@ -294,12 +343,6 @@ USE_PORTEXCLUDES ?= false
 # The default DNSSEC root key location is set to /var/lib/unbound/root.key
 # DEFAULT_DNSSEC_ROOTKEY_FILE=/var/lib/unbound/root.key
 
-# To build with clang, use: scan-build make programs
-#GCC=clang
-GCC ?= gcc
-
-MAKE ?= make
-
 # Enable AddressSanitizer - see https://libreswan.org/wiki/Compiling_with_AddressSanitizer
 # requires clang or gcc >= 4.8 and libasan. Do not combine with Electric Fence and do not
 # run pluto with --leak-detective
@@ -311,8 +354,6 @@ ASAN ?=
 
 # You can also run this before starting libreswan on glibc systems:
 #export MALLOC_PERTURB_=$(($RANDOM % 255 + 1))
-
-PORTINCLUDE ?=
 
 # look for POD2MAN command
 POD2MAN ?= $(shell which pod2man | grep / | head -n1)
@@ -333,6 +374,10 @@ ifeq ($(INITSYSTEM),systemd)
 USE_SYSTEMD_WATCHDOG ?= true
 SD_RESTART_TYPE ?= on-failure
 SD_PLUTO_OPTIONS ?= --leak-detective
+SYSTEMUNITDIR ?= $(shell $(PKG_CONFIG) systemd --variable=systemdsystemunitdir)
+SYSTEMTMPFILESDIR ?= $(shell $(PKG_CONFIG) systemd --variable=tmpfilesdir)
+UNITDIR ?= $(DESTDIR)$(SYSTEMUNITDIR)
+TMPFILESDIR ?= $(DESTDIR)$(SYSTEMTMPFILESDIR)
 else
 USE_SYSTEMD_WATCHDOG ?= false
 endif
@@ -417,7 +462,7 @@ WHACKLIB = ${OBJDIRTOP}/lib/libwhack/libwhack.a
 IPSECCONFLIB = ${OBJDIRTOP}/lib/libipsecconf/libipsecconf.a
 
 # export everything so that scripts can use them.
-export LIBSWANDIR LIBRESWANSRCDIR ARCH PORTINCLUDE
+export LIBSWANDIR LIBRESWANSRCDIR ARCH
 export LIBRESWANLIB LSWTOOLLIB
 export WHACKLIB IPSECCONFLIB
 
@@ -426,6 +471,7 @@ IPSEC_SECRETS_FILE ?= $(FINALCONFDIR)/ipsec.secrets
 # how to do variable substitution in sed-transformed files
 TRANSFORM_VARIABLES = sed -e "s:@IPSECVERSION@:$(IPSECVERSION):g" \
 			-e "/@${OSDEP}_START@/,/@${OSDEP}_END@/d" \
+			-e "s:@OSDEP@:${OSDEP}:g" \
 			-e "s:@EXAMPLECONFDIR@:$(EXAMPLECONFDIR):g" \
 			-e "s:@FINALCONFDDIR@:$(FINALCONFDDIR):g" \
 			-e "s:@FINALCONFDIR@:$(FINALCONFDIR):g" \
@@ -433,6 +479,7 @@ TRANSFORM_VARIABLES = sed -e "s:@IPSECVERSION@:$(IPSECVERSION):g" \
 			-e "s:@FINALDOCDIR@:$(FINALDOCDIR):g" \
 			-e "s:@FINALEXAMPLECONFDIR@:$(FINALEXAMPLECONFDIR):g" \
 			-e "s:@FINALLIBEXECDIR@:$(FINALLIBEXECDIR):g" \
+			-e "s:@FINALLOGDIR@:$(FINALLOGDIR):g" \
 			-e "s:@FINALINITDDIR@:$(FINALINITDDIR):g" \
 			-e "s:@FINALSBINDIR@:$(FINALSBINDIR):g" \
 			-e "s:@FINALSYSCONFDIR@:$(FINALSYSCONFDIR):g" \
@@ -469,45 +516,6 @@ OSMEDIA ?= http://download.fedoraproject.org/pub/fedora/linux/releases/28/Server
 # OSTYPE ?= ubuntu
 # OSMEDIA ?= http://ftp.ubuntu.com/ubuntu/dists/precise/main/installer-amd64/
 
-# Now that all the configuration variables are defined, use them to
-# define USERLAND_CFLAGS and USERLAND_LDFLAGS
-
-# -D... goes in here
-USERLAND_CFLAGS += -std=gnu99
-
-#
-# Options that really belong in CFLAGS (making for an intuitive way to
-# override them).
-#
-# Unfortunately this file is shared with the kernel which seems to
-# have its own ideas on CFLAGS.
-#
-
-DEBUG_CFLAGS ?= -g
-USERLAND_CFLAGS += $(DEBUG_CFLAGS)
-
-# eventually: -Wshadow -pedantic?
-WERROR_CFLAGS ?= -Werror -Wno-missing-field-initializers
-USERLAND_CFLAGS += $(WERROR_CFLAGS)
-WARNING_CFLAGS ?= -Wall -Wextra -Wformat -Wformat-nonliteral -Wformat-security -Wundef -Wmissing-declarations -Wredundant-decls -Wnested-externs
-USERLAND_CFLAGS += $(WARNING_CFLAGS)
-
-# _FORTIFY_SOURCE requires at least -O.  Gentoo, pre-defines
-# _FORTIFY_SOURCE (to what? who knows!); force it to our preferred
-# value.
-OPTIMIZE_CFLAGS ?= -O2 -U_FORTIFY_SOURCE -D_FORTIFY_SOURCE=2
-USERLAND_CFLAGS += $(OPTIMIZE_CFLAGS)
-
-# Dumping ground for an arbitrary set of flags.  Should probably be
-# separated out.
-USERCOMPILE ?= -fstack-protector-all -fno-strict-aliasing -fPIE -DPIE
-USERLAND_CFLAGS += $(USERCOMPILE)
-
-# Basic linking flags
-USERLINK ?= -Wl,-z,relro,-z,now -pie
-USERLAND_LDFLAGS += -Wl,--as-needed
-USERLAND_LDFLAGS += $(USERLINK) $(ASAN)
-
 # Build/link against the more pedantic ElectricFence memory allocator;
 # used when testing.
 USE_EFENCE ?= false
@@ -540,7 +548,7 @@ USE_BSDKAME ?= false
 USE_XFRM_INTERFACE ?= true
 
 ifeq ($(USE_NETKEY),true)
-USERLAND_CFLAGS += -DNETKEY_SUPPORT
+USERLAND_CFLAGS += -DXFRM_SUPPORT
 ifeq ($(USE_XFRM_INTERFACE), true)
 USERLAND_CFLAGS += -DUSE_XFRM_INTERFACE
 endif
@@ -690,15 +698,28 @@ endif
 # secure hash functions to build our own PRF. With this enabled,
 # libreswan itself no longer needs to be FIPS validated.
 #
-# Requires NSS > 3.44
+# Requires NSS >= 3.52
+# NSS 3.44 - 3.51 can be used if the following NSS upstream commit
+# is applied:
+#
+# HG changeset patch
+# User Robert Relyea <rrelyea@redhat.com>
+# Date 1587427096 25200
+#      Mon Apr 20 16:58:16 2020 -0700
+# Node ID 225bb39eade102eef5f3999eae04a7a16da9b330
+# Parent  aae226c20dfd2189fb395f43269fe06cf1fb9cb1
+# Bug 1629663 NSS missing IKEv1 Quick Mode KDF prf r=kjacobs
 
-USE_NSS_PRF ?= false
-ifeq ($(USE_NSS_PRF),true)
-USERLAND_CFLAGS += -DUSE_NSS_PRF
+ifdef USE_NSS_PRF
+$(error ERROR: Deprecated USE_NSS_PRF variable set, use USE_NSS_KDF instead)
+endif
+
+USE_NSS_KDF ?= false
+ifeq ($(USE_NSS_KDF),true)
+USERLAND_CFLAGS += -DUSE_NSS_KDF
 endif
 
 USERLAND_CFLAGS += -DDEFAULT_RUNDIR=\"$(FINALRUNDIR)\"
-USERLAND_CFLAGS += -DFIPSPRODUCTCHECK=\"${FIPSPRODUCTCHECK}\"
 USERLAND_CFLAGS += -DIPSEC_CONF=\"$(FINALCONFFILE)\"
 USERLAND_CFLAGS += -DIPSEC_CONFDDIR=\"$(FINALCONFDDIR)\"
 USERLAND_CFLAGS += -DIPSEC_NSSDIR=\"$(FINALNSSDIR)\"

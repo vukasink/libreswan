@@ -23,9 +23,9 @@
  * The only hard part is checking for host-part bits turned on.
  */
 err_t	/* NULL for success, else string literal */
-initsubnet(addr, count, clash, dst)
+initsubnet(addr, maskbits, clash, dst)
 const ip_address * addr;
-int count;
+int maskbits;
 int clash;	/* '0' zero host-part bits, 'x' die on them */
 ip_subnet *dst;
 {
@@ -60,7 +60,7 @@ ip_subnet *dst;
 		return "unknown clash-control value in initsubnet";
 	}
 
-	c = count / 8;
+	c = maskbits / 8;
 	if (c > n)
 		return "impossible mask count";
 
@@ -68,7 +68,7 @@ ip_subnet *dst;
 	n -= c;
 
 	m = 0xff;
-	c = count % 8;
+	c = maskbits % 8;
 	if (n > 0 && c != 0)	/* partial byte */
 		m >>= c;
 
@@ -85,13 +85,13 @@ ip_subnet *dst;
 		p++;
 	}
 
-	dst->maskbits = count;
+	dst->maskbits = maskbits;
 
 	if (warning) {
 		LSWLOG(buf) {
 			jam(buf, "WARNING:improper subnet mask, host-part bits on input ");
 			jam_address(buf, addr);
-			jam(buf, "/%d ", count);
+			jam(buf, "/%d ", maskbits);
 			jam(buf, " extracted subnet ");
 			jam_subnet(buf, dst);
 		}
@@ -114,6 +114,31 @@ ip_subnet *dst;
  *
  * NULL for success, else string literal
  */
+
+static ip_subnet subnet3(const ip_address *address, int maskbits, int port)
+{
+	ip_endpoint e = endpoint(address, port);
+	ip_subnet s = {
+		.addr = e,
+		.maskbits = maskbits,
+		.is_subnet = true,
+	};
+	psubnet(&s);
+	return s;
+}
+
+static ip_subnet subnet_from_endpoint(const ip_endpoint *endpoint)
+{
+	const struct ip_info *afi = endpoint_type(endpoint);
+	if (!pexpect(afi != NULL)) {
+		return unset_subnet;
+	}
+	ip_address address = endpoint_address(endpoint);
+	int hport = endpoint_hport(endpoint);
+	pexpect(hport != 0);
+	return subnet3(&address, afi->mask_cnt, hport);
+}
+
 err_t endtosubnet(const ip_endpoint *endpoint, ip_subnet *dst, where_t where)
 {
 	const struct ip_info *afi = endpoint_type(endpoint);

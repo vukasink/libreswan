@@ -23,14 +23,33 @@
 
 const ip_address unset_address; /* all zeros */
 
+ip_address strip_endpoint(const ip_address *in, where_t where)
+{
+	ip_address out = *in;
+	if (in->hport != 0 || in->ipproto != 0 || in->is_endpoint) {
+		address_buf b;
+		dbg("stripping address %s of is_endpoint=%d hport=%u ipproto=%u "PRI_WHERE,
+		    str_address(in, &b), in->is_endpoint,
+		    in->hport, in->ipproto, pri_where(where));
+		out.hport = 0;
+		out.ipproto = 0;
+		out.is_endpoint = false;
+	}
+	out.is_address = true;
+	paddress(&out);
+	return out;
+}
+
 ip_address address_from_shunk(const struct ip_info *afi, const shunk_t bytes)
 {
 	passert(afi != NULL);
 	ip_address address = {
 		.version = afi->ip_version,
+		.is_address = true,
 	};
 	passert(afi->ip_size == bytes.len);
-	memcpy(address.bytes, bytes.ptr, bytes.len);
+	memcpy(&address.bytes, bytes.ptr, bytes.len);
+	paddress(&address);
 	return address;
 }
 
@@ -90,7 +109,7 @@ shunk_t address_as_shunk(const ip_address *address)
 	if (afi == NULL) {
 		return null_shunk;
 	}
-	return shunk2(address->bytes, afi->ip_size);
+	return shunk2(&address->bytes, afi->ip_size);
 }
 
 chunk_t address_as_chunk(ip_address *address)
@@ -102,35 +121,38 @@ chunk_t address_as_chunk(ip_address *address)
 	if (afi == NULL) {
 		return empty_chunk;
 	}
-	return chunk2(address->bytes, afi->ip_size);
+	return chunk2(&address->bytes, afi->ip_size);
 }
 
 /*
  * Implement https://tools.ietf.org/html/rfc5952
  */
 
-static void jam_raw_ipv4_address(jambuf_t *buf, shunk_t a, char sepc)
+static size_t jam_raw_ipv4_address(jambuf_t *buf, shunk_t a, char sepc)
 {
 	const char seps[2] = { sepc == 0 ? '.' : sepc, 0, };
 	const char *sep = "";
+	size_t s = 0;
 	for (size_t i = 0; i < a.len; i++) {
 		const uint8_t *bytes = a.ptr;
-		jam(buf, "%s%"PRIu8, sep, bytes[i]);
+		s += jam(buf, "%s%"PRIu8, sep, bytes[i]);
 		sep = seps;
 	}
+	return s;
 }
 
-static void jam_raw_ipv6_address(jambuf_t *buf, shunk_t a, char sepc,
-				 shunk_t skip)
+static size_t jam_raw_ipv6_address(jambuf_t *buf, shunk_t a, char sepc,
+				   shunk_t skip)
 {
 	const char seps[2] = { sepc == 0 ? ':' : sepc, 0, };
 	const void *ptr = a.ptr;
 	const char *sep = "";
 	const void *last = a.ptr + a.len - 2;
+	size_t s = 0;
 	while (ptr <= last) {
 		if (ptr == skip.ptr) {
 			/* skip zero run */
-			jam(buf, "%s%s", seps, seps);
+			s += jam(buf, "%s%s", seps, seps);
 			sep = "";
 			ptr += skip.len;
 		} else {
@@ -141,35 +163,39 @@ static void jam_raw_ipv6_address(jambuf_t *buf, shunk_t a, char sepc,
 			 */
 			const uint8_t *p = (const uint8_t*)ptr;
 			unsigned ia = (p[0] << 8) + p[1];
-			jam(buf, "%s%x", sep, ia);
+			s += jam(buf, "%s%x", sep, ia);
 			sep = seps;
 			ptr += 2;
 		}
 	}
+	return s;
 }
 
-void jam_address_raw(jambuf_t *buf, const ip_address *address, char sepc)
+size_t jam_address_raw(jambuf_t *buf, const ip_address *address, char sepc)
 {
 	if (address == NULL) {
-		jam(buf, "<none>");
-		return;
+		return jam(buf, "<none>");
 	}
+
 	shunk_t a = address_as_shunk(address);
 	int type = addrtypeof(address);
+	size_t s = 0;
+
 	switch (type) {
 	case AF_INET: /* N.N.N.N */
-		jam_raw_ipv4_address(buf, a, sepc);
+		s += jam_raw_ipv4_address(buf, a, sepc);
 		break;
 	case AF_INET6: /* N:N:...:N */
-		jam_raw_ipv6_address(buf, a, sepc, null_shunk);
+		s += jam_raw_ipv6_address(buf, a, sepc, null_shunk);
 		break;
 	case AF_UNSPEC:
-		jam(buf, "<unspecified>");
+		s += jam(buf, "<unspecified>");
 		break;
 	default:
-		jam(buf, "<invalid>");
+		s += jam(buf, "<invalid>");
 		break;
 	}
+	return s;
 }
 
 /*
@@ -199,78 +225,84 @@ static shunk_t zeros_to_skip(shunk_t a)
 	return zero;
 }
 
-static void format_address_cooked(jambuf_t *buf, bool sensitive,
-				  const ip_address *address)
+static size_t format_address_cooked(jambuf_t *buf, bool sensitive,
+				    const ip_address *address)
 {
 	/*
 	 * A NULL address can't be sensitive.
 	 */
 	if (address == NULL) {
-		jam(buf, "<none>");
-		return;
+		return jam(buf, "<none>");
 	}
+
 	if (sensitive) {
-		jam(buf, "<ip-address>");
-		return;
+		return jam(buf, "<ip-address>");
 	}
+
 	shunk_t a = address_as_shunk(address);
 	int type = addrtypeof(address);
+	size_t s = 0;
+
 	switch (type) {
 	case AF_INET: /* N.N.N.N */
-		jam_raw_ipv4_address(buf, a, 0);
+		s += jam_raw_ipv4_address(buf, a, 0);
 		break;
 	case AF_INET6: /* N:N:...:N */
-		jam_raw_ipv6_address(buf, a, 0, zeros_to_skip(a));
+		s += jam_raw_ipv6_address(buf, a, 0, zeros_to_skip(a));
 		break;
 	case AF_UNSPEC:
-		jam(buf, "<unspecified>");
+		s += jam(buf, "<unspecified>");
 		break;
 	default:
-		jam(buf, "<invalid>");
+		s += jam(buf, "<invalid>");
 		break;
 	}
+	return s;
 }
 
-void jam_address(jambuf_t *buf, const ip_address *address)
+size_t jam_address(jambuf_t *buf, const ip_address *address)
 {
-	format_address_cooked(buf, false, address);
+	return format_address_cooked(buf, false, address);
 }
 
-void jam_address_sensitive(jambuf_t *buf, const ip_address *address)
+size_t jam_address_sensitive(jambuf_t *buf, const ip_address *address)
 {
-	format_address_cooked(buf, !log_ip, address);
+	return format_address_cooked(buf, !log_ip, address);
 }
 
-void jam_address_reversed(jambuf_t *buf, const ip_address *address)
+size_t jam_address_reversed(jambuf_t *buf, const ip_address *address)
 {
 	shunk_t bytes = address_as_shunk(address);
 	int type = addrtypeof(address);
+	size_t s = 0;
+
 	switch (type) {
 	case AF_INET:
 	{
 		for (int i = bytes.len - 1; i >= 0; i--) {
 			const uint8_t *byte = bytes.ptr;
-			jam(buf, "%d.", byte[i]);
+			s += jam(buf, "%d.", byte[i]);
 		}
-		jam(buf, "IN-ADDR.ARPA.");
+		s += jam(buf, "IN-ADDR.ARPA.");
 		break;
 	}
 	case AF_INET6:
 	{
 		for (int i = bytes.len - 1; i >= 0; i--) {
 			const uint8_t *byte = bytes.ptr;
-			jam(buf, "%x.%x.", byte[i] & 0xf, byte[i] >> 4);
+			s += jam(buf, "%x.%x.", byte[i] & 0xf, byte[i] >> 4);
 		}
-		jam(buf, "IP6.ARPA.");
+		s += jam(buf, "IP6.ARPA.");
 		break;
 	}
 	case AF_UNSPEC:
-		jam(buf, "<unspecified>");
+		s += jam(buf, "<unspecified>");
 		break;
 	default:
-		jam(buf, "<invalid>");
+		s += jam(buf, "<invalid>");
 		break;
 	}
+	return s;
 }
 
 const char *str_address_raw(const ip_address *src, char sep,
@@ -307,6 +339,7 @@ const char *str_address_reversed(const ip_address *src,
 
 ip_address address_any(const struct ip_info *info)
 {
+	passert(info != NULL);
 	if (info == NULL) {
 		/*
 		 * XXX: Loudly reject AF_UNSPEC, but don't crash.
@@ -335,11 +368,10 @@ bool address_is_any(const ip_address *address)
 	const struct ip_info *type = address_type(address);
 	if (type == NULL) {
 		return false;
-	} else {
-		shunk_t addr = address_as_shunk(address);
-		shunk_t any = address_as_shunk(&type->any_address);
-		return hunk_eq(addr, any);
 	}
+	shunk_t addr = address_as_shunk(address);
+	shunk_t any = address_as_shunk(&type->any_address);
+	return hunk_eq(addr, any);
 }
 
 bool address_is_specified(const ip_address *address)
@@ -347,11 +379,10 @@ bool address_is_specified(const ip_address *address)
 	const struct ip_info *type = address_type(address);
 	if (type == NULL) {
 		return false;
-	} else {
-		shunk_t addr = address_as_shunk(address);
-		shunk_t any = address_as_shunk(&type->any_address);
-		return !hunk_eq(addr, any);
 	}
+	shunk_t addr = address_as_shunk(address);
+	shunk_t any = address_as_shunk(&type->any_address);
+	return !hunk_eq(addr, any);
 }
 
 bool address_is_loopback(const ip_address *address)
@@ -359,11 +390,10 @@ bool address_is_loopback(const ip_address *address)
 	const struct ip_info *type = address_type(address);
 	if (type == NULL) {
 		return false;
-	} else {
-		shunk_t addr = address_as_shunk(address);
-		shunk_t loopback = address_as_shunk(&type->loopback_address);
-		return hunk_eq(addr, loopback);
 	}
+	shunk_t addr = address_as_shunk(address);
+	shunk_t loopback = address_as_shunk(&type->loopback_address);
+	return hunk_eq(addr, loopback);
 }
 
 /*

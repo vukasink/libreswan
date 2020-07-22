@@ -40,6 +40,7 @@ west #
 west #
  ipsec auto --status
 000 using kernel interface: netkey
+000  
 000 interface eth1 [2001:db8:1:2::45]:500
 000 interface eth0 [2001:db8:0:1::254]:500
 000 interface lo [::1]:500
@@ -50,7 +51,6 @@ west #
 000 interface eth1 192.1.2.45:4500
 000 interface eth1 192.1.2.45:500
 000  
-000  
 000 fips mode=disabled;
 000 SElinux=XXXXX
 000 seccomp=OFF
@@ -58,11 +58,9 @@ west #
 000 config setup options:
 000  
 000 configdir=/etc, configfile=/etc/ipsec.conf, secrets=/etc/ipsec.secrets, ipsecdir=/etc/ipsec.d
-000 nssdir=/etc/ipsec.d, dumpdir=/tmp, statsbin=unset
-000 dnssec-rootkey-file=/var/lib/unbound/root.key, dnssec-trusted=<unset>
 000 sbindir=PATH/sbin, libexecdir=PATH/libexec/ipsec
 000 nhelpers=-1, uniqueids=yes, dnssec-enable=yes, perpeerlog=no, logappend=no, logip=yes, shuntlifetime=900s, xfrmlifetime=30s
-000 ddos-cookies-threshold=50000, ddos-max-halfopen=25000, ddos-mode=auto
+000 ddos-cookies-threshold=25000, ddos-max-halfopen=50000, ddos-mode=auto
 000 ikeport=500, ikebuf=0, msg_errqueue=yes, strictcrlpolicy=no, crlcheckinterval=0, listen=<any>, nflog-all=0
 000 ocsp-enable=no, ocsp-strict=no, ocsp-timeout=2, ocsp-uri=<unset>
 000 ocsp-trust-name=<unset>
@@ -144,7 +142,7 @@ west #
 000 "v6-transport":   nflog-group: unset; mark: unset; vti-iface:unset; vti-routing:no; vti-shared:no; nic-offload:auto;
 000 "v6-transport":   our idtype: ID_FQDN; our id=@west; their idtype: ID_FQDN; their id=@east
 000 "v6-transport":   dpd: action:hold; delay:0; timeout:0; nat-t: encaps:auto; nat_keepalive:yes; ikev1_natt:both
-000 "v6-transport":   newest ISAKMP SA: #0; newest IPsec SA: #0;
+000 "v6-transport":   newest ISAKMP SA: #0; newest IPsec SA: #0; conn serial: $1;
 000  
 000 Total IPsec connections: loaded 1, active 0
 000  

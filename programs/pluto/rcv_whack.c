@@ -8,7 +8,7 @@
  * Copyright (C) 2010 David McCullough <david_mccullough@securecomputing.com>
  * Copyright (C) 2011 Mika Ilmaranta <ilmis@foobar.fi>
  * Copyright (C) 2012-2013 Paul Wouters <paul@libreswan.org>
- * Copyright (C) 2014-2019 Paul Wouters <pwouters@redhat.com>
+ * Copyright (C) 2014-2020 Paul Wouters <pwouters@redhat.com>
  * Copyright (C) 2014-2017 Antony Antony <antony@phenome.org>
  * Copyright (C) 2019 Andrew Cagney <cagney@gnu.org>
  *
@@ -36,8 +36,6 @@
 #include <resolv.h>
 #include <fcntl.h>
 #include <unistd.h>		/* for gethostname() */
-
-#include "libreswan/pfkeyv2.h"
 
 #include <event2/event.h>
 #include <event2/event_struct.h>
@@ -69,6 +67,9 @@
 #include "pluto_crypt.h"  /* for pluto_crypto_req & pluto_crypto_req_cont */
 #include "ikev2.h"
 #include "ikev2_redirect.h"
+#include "ikev2_delete.h"
+#include "ikev2_liveness.h"
+#include "ikev2_rekey.h"
 #include "server.h" /* for pluto_seccomp */
 #include "kernel_alg.h"
 #include "ike_alg.h"
@@ -78,17 +79,135 @@
 #include "initiate.h"
 #include "iface.h"
 #include "show.h"
+#ifdef HAVE_SECCOMP
+#include "pluto_seccomp.h"
+#endif
 
 #ifdef USE_XFRM_INTERFACE
 # include "kernel_xfrm_interface.h"
 #endif
+#include "addresspool.h"
 
 #include "pluto_stats.h"
+#include "state_db.h"
+
+#include "nss_cert_reread.h"
+#include "send.h"			/* for impair: send_keepalive() */
+
+static struct state *find_impaired_state(unsigned biased_what, struct fd *whackfd)
+{
+	if (biased_what == 0) {
+		log_global(RC_COMMENT, whackfd,
+			   "state 'no' is not valid");
+		return NULL;
+	}
+	so_serial_t so = biased_what - 1; /* unbias */
+	struct state *st = state_by_serialno(so);
+	if (st == NULL) {
+		log_global(RC_COMMENT, whackfd,
+			   "state #%lu not found", so);
+		return NULL;
+	}
+	return st;
+}
+
+static struct logger attach_logger(struct state *st, bool background, struct fd *whackfd)
+{
+	/* so errors go to whack and file regardless of BACKGROUND */
+	struct logger logger = *st->st_logger;
+	logger.global_whackfd = whackfd;
+	if (!background) {
+		/* XXX: something better */
+		close_any(&st->st_logger->object_whackfd);
+		st->st_logger->object_whackfd = dup_any(whackfd);
+	}
+	return logger;
+}
+
+static void whack_impair_action(enum impair_action action, unsigned event,
+				unsigned biased_what, bool background, struct fd *whackfd)
+{
+	switch (action) {
+	case CALL_IMPAIR_UPDATE:
+		/* err... */
+		break;
+	case CALL_GLOBAL_EVENT:
+		call_global_event_inline(event, whackfd);
+		break;
+	case CALL_STATE_EVENT:
+	{
+		struct state *st = find_impaired_state(biased_what, whackfd);
+		if (st == NULL) {
+			/* already logged */
+			return;
+		}
+		/* will log */
+		struct logger logger = attach_logger(st, background, whackfd);
+		call_state_event_inline(&logger, st, event);
+		break;
+	}
+	case CALL_INITIATE_v2_LIVENESS:
+	{
+		struct state *st = find_impaired_state(biased_what, whackfd);
+		if (st == NULL) {
+			/* already logged */
+			return;
+		}
+		/* will log */
+		struct ike_sa *ike = ike_sa(st, HERE);
+		if (ike == NULL) {
+			/* already logged */
+			return;
+		}
+		struct logger logger = attach_logger(&ike->sa, background, whackfd);
+		log_message(RC_COMMENT, &logger, "initiating liveness");
+		initiate_v2_liveness(&logger, ike);
+		break;
+	}
+	case CALL_INITIATE_v2_DELETE:
+	{
+		struct state *st = find_impaired_state(biased_what, whackfd);
+		if (st == NULL) {
+			/* already logged */
+			return;
+		}
+		/* will log */
+		attach_logger(st, background, whackfd);
+		initiate_v2_delete(ike_sa(st, HERE), st);
+		break;
+	}
+	case CALL_INITIATE_v2_REKEY:
+	{
+		struct state *st = find_impaired_state(biased_what, whackfd);
+		if (st == NULL) {
+			/* already logged */
+			return;
+		}
+		/* will log */
+		attach_logger(st, background, whackfd);
+		initiate_v2_rekey(ike_sa(st, HERE), st);
+		break;
+	}
+	case CALL_SEND_KEEPALIVE:
+	{
+		struct state *st = find_impaired_state(biased_what, whackfd);
+		if (st == NULL) {
+			/* already logged */
+			return;
+		}
+		/* will log */
+		struct logger logger = attach_logger(st, true/*background*/, whackfd);
+		log_message(RC_COMMENT, &logger, "sending keepalive");
+		send_keepalive(st, "inject keep-alive");
+		break;
+	}
+	}
+}
 
 static int whack_route_connection(struct connection *c,
-				  void *arg)
+				  struct fd *whackfd,
+				  void *unused_arg UNUSED)
 {
-	struct fd *whackfd = arg;
 	struct connection *old = push_cur_connection(c);
 
 	if (!oriented(*c)) {
@@ -97,7 +216,7 @@ static int whack_route_connection(struct connection *c,
 			       "we cannot identify ourselves with either end of this connection");
 	} else if (c->policy & POLICY_GROUP) {
 		route_group(whackfd, c);
-	} else if (!trap_connection(c)) {
+	} else if (!trap_connection(c, whackfd)) {
 		/* XXX: why whack only? */
 		log_connection(RC_ROUTE|WHACK_STREAM, whackfd, c, "could not route");
 	}
@@ -106,9 +225,9 @@ static int whack_route_connection(struct connection *c,
 }
 
 static int whack_unroute_connection(struct connection *c,
-				    void *arg)
+				    struct fd *whackfd,
+				    void *unused_arg UNUSED)
 {
-	struct fd *whackfd = arg;
 	const struct spd_route *sr;
 	int fail = 0;
 
@@ -140,9 +259,9 @@ static void do_whacklisten(struct fd *whackfd)
 #ifdef USE_SYSTEMD_WATCHDOG
 	pluto_sd(PLUTO_SD_RELOADING, SD_REPORT_NO_STATUS);
 #endif
-	libreswan_log("listening for IKE messages");
-	listening = TRUE;
-	find_ifaces(TRUE /* remove dead interfaces */);
+	log_global(RC_LOG, whackfd, "listening for IKE messages");
+	listening = true;
+	find_ifaces(true /* remove dead interfaces */, whackfd);
 #ifdef USE_XFRM_INTERFACE
 	stale_xfrmi_interfaces();
 #endif
@@ -194,7 +313,6 @@ static bool whack_process(struct fd *whackfd, const struct whack_message *const 
 	if (m->whack_options) {
 		switch (m->opt_set) {
 		case WHACK_ADJUSTOPTIONS:
-#ifdef FIPS_CHECK
 			if (libreswan_fipsmode()) {
 				if (lmod_is_set(m->debugging, DBG_PRIVATE)) {
 					whack_log(RC_FATAL, whackfd,
@@ -202,7 +320,6 @@ static bool whack_process(struct fd *whackfd, const struct whack_message *const 
 					return false; /*don't shutdown*/
 				}
 			}
-#endif
 			if (m->name == NULL) {
 				/*
 				 * This is done in two two-steps so
@@ -216,20 +333,26 @@ static bool whack_process(struct fd *whackfd, const struct whack_message *const 
 				lset_t old_debugging = cur_debugging & DBG_MASK;
 				lset_t new_debugging = lmod(old_debugging, m->debugging);
 				set_debugging(cur_debugging | new_debugging);
-				LSWDBGP(DBG_CONTROL, buf) {
+				LSWDBGP(DBG_BASE, buf) {
 					jam(buf, "old debugging ");
 					jam_enum_lset_short(buf, &debug_names,
 							    "+", old_debugging);
 					jam(buf, " + ");
 					jam_lmod(buf, &debug_names, "+", m->debugging);
 				}
-				LSWDBGP(DBG_CONTROL, buf) {
+				LSWDBGP(DBG_BASE, buf) {
 					jam(buf, "new debugging = ");
 					jam_enum_lset_short(buf, &debug_names,
 							    "+", new_debugging);
 				}
 				set_debugging(new_debugging);
-				process_impair(&m->impairment);
+				struct logger global_logger = GLOBAL_LOGGER(whackfd);
+				for (unsigned i = 0; i < m->nr_impairments; i++) {
+					process_impair(&m->impairments[i],
+						       whack_impair_action,
+						       m->whack_async/*background*/,
+						       whackfd, &global_logger);
+				}
 			} else if (!m->whack_connection) {
 				struct connection *c = conn_by_name(m->name, true/*strict*/);
 				if (c == NULL) {
@@ -237,7 +360,7 @@ static bool whack_process(struct fd *whackfd, const struct whack_message *const 
 						  "no connection named \"%s\"", m->name);
 				} else if (c != NULL) {
 					c->extra_debugging = m->debugging;
-					LSWDBGP(DBG_CONTROL, buf) {
+					LSWDBGP(DBG_BASE, buf) {
 						jam(buf, "\"%s\" extra_debugging = ",
 						    c->name);
 						jam_lmod(buf, &debug_names,
@@ -255,19 +378,25 @@ static bool whack_process(struct fd *whackfd, const struct whack_message *const 
 	}
 
 	if (m->whack_rekey_ike) {
-		if (m->name == NULL)
-			whack_log(RC_FATAL, whackfd,
-				  "received whack command to rekey IKE SA of connection, but did not receive the connection name or state number - ignored");
-		else
-			rekey_now(m->name, IKE_SA);
+		if (m->name == NULL) {
+			/* leave bread crumb */
+			log_global(RC_FATAL, whackfd,
+				   "received whack command to rekey IKE SA of connection, but did not receive the connection name or state number - ignored");
+		} else {
+			rekey_now(m->name, IKE_SA, whackfd,
+				  m->whack_async/*background*/);
+		}
 	}
 
 	if (m->whack_rekey_ipsec) {
-		if (m->name == NULL)
-			whack_log(RC_FATAL, whackfd,
-				  "received whack command to rekey IPsec SA of connection, but did not receive the connection name or state number - ignored");
-		else
-			rekey_now(m->name, IPSEC_SA);
+		if (m->name == NULL) {
+			/* leave bread crumb */
+			log_global(RC_FATAL, whackfd,
+				   "received whack command to rekey IPsec SA of connection, but did not receive the connection name or state number - ignored");
+		} else {
+			rekey_now(m->name, IPSEC_SA, whackfd,
+				  m->whack_async/*background*/);
+		}
 	}
 
 	/* Deleting combined with adding a connection works as replace.
@@ -279,8 +408,8 @@ static bool whack_process(struct fd *whackfd, const struct whack_message *const 
 			whack_log(RC_FATAL, whackfd,
 				  "received whack command to delete a connection, but did not receive the connection name - ignored");
 		} else {
-			terminate_connection(m->name, TRUE);
-			delete_connections_by_name(m->name, !m->whack_connection);
+			terminate_connection(m->name, true, whackfd);
+			delete_connections_by_name(m->name, !m->whack_connection, whackfd);
 		}
 	}
 
@@ -312,21 +441,29 @@ static bool whack_process(struct fd *whackfd, const struct whack_message *const 
 			state_with_serialno(m->whack_deletestateno);
 
 		if (st == NULL) {
-			loglog(RC_UNKNOWN_NAME, "no state #%lu to delete",
-					m->whack_deletestateno);
+			loglog_global(RC_UNKNOWN_NAME, whackfd, "no state #%lu to delete",
+				      m->whack_deletestateno);
 		} else {
 			set_cur_state(st);
-			plog_state(st, "received whack to delete %s state #%lu %s",
-				   enum_name(&ike_version_names, st->st_ike_version),
-				   st->st_serialno,
-				   st->st_state->name);
+			/* needs an abstraction */
+			close_any(&st->st_logger->global_whackfd);
+			st->st_logger->global_whackfd = dup_any(whackfd);
+			log_state(LOG_STREAM/*not-whack*/, st,
+				  "received whack to delete %s state #%lu %s",
+				  enum_name(&ike_version_names, st->st_ike_version),
+				  st->st_serialno,
+				  st->st_state->name);
 
 			if ((st->st_ike_version == IKEv2) && !IS_CHILD_SA(st)) {
-				plog_state(st, "Also deleting any corresponding CHILD_SAs");
-				delete_my_family(st, FALSE);
+				log_state(LOG_STREAM/*not-whack*/, st,
+					  "Also deleting any corresponding CHILD_SAs");
+				delete_ike_family(pexpect_ike_sa(st),
+						  PROBABLY_SEND_DELETE);
+				st = NULL;
 				/* note: no md->st to clear */
 			} else {
 				delete_state(st);
+				st = NULL;
 				/* note: no md->st to clear */
 			}
 		}
@@ -346,13 +483,8 @@ static bool whack_process(struct fd *whackfd, const struct whack_message *const 
 		redirect_gw = clone_str(ipstr(&m->active_redirect_gw, &b),
 				"active redirect gw ip");
 
-		if (!isanyaddr(&m->active_redirect_peer)) {
-			/* if we are redirecting one specific peer */
-			find_states_and_redirect(NULL, m->active_redirect_peer, redirect_gw);
-		} else {
-			/* we are redirecting all peers of one connection */
-			find_states_and_redirect(m->name, m->active_redirect_peer, redirect_gw);
-		}
+		/* we are redirecting all peers of one connection */
+		find_states_and_redirect(m->name, redirect_gw, whackfd);
 	}
 
 	/* update any socket buffer size before calling listen */
@@ -382,7 +514,7 @@ static bool whack_process(struct fd *whackfd, const struct whack_message *const 
 
 	if (m->whack_ddns) {
 		libreswan_log("updating pending dns lookups");
-		connection_check_ddns();
+		connection_check_ddns(whackfd);
 	}
 
 	if (m->whack_reread & REREAD_SECRETS)
@@ -402,6 +534,10 @@ static bool whack_process(struct fd *whackfd, const struct whack_message *const 
 	if (m->whack_reread & REREAD_FETCH)
 		add_crl_fetch_requests(NULL);
 #endif
+
+	if (m->whack_reread & REREAD_CERTS) {
+		reread_cert_connections(whackfd);
+	}
 
 	if (m->whack_list & LIST_PSKS)
 		list_psks(whackfd);
@@ -435,10 +571,10 @@ static bool whack_process(struct fd *whackfd, const struct whack_message *const 
 			struct connection *c = conn_by_name(m->name, true/*strict*/);
 
 			if (c != NULL) {
-				whack_route_connection(c, whackfd);
-			} else if (0 == foreach_connection_by_alias(m->name,
+				whack_route_connection(c, whackfd, NULL);
+			} else if (0 == foreach_connection_by_alias(m->name, whackfd,
 								    whack_route_connection,
-								    whackfd)) {
+								    NULL)) {
 				whack_log(RC_ROUTE, whackfd,
 					  "no connection or alias '%s'",
 					  m->name);
@@ -451,10 +587,10 @@ static bool whack_process(struct fd *whackfd, const struct whack_message *const 
 
 		struct connection *c = conn_by_name(m->name, true/*strict*/);
 		if (c != NULL) {
-			whack_unroute_connection(c, whackfd);
-		} else if (0 == foreach_connection_by_alias(m->name,
+			whack_unroute_connection(c, whackfd, NULL);
+		} else if (0 == foreach_connection_by_alias(m->name, whackfd,
 							    whack_unroute_connection,
-							    whackfd)) {
+							    NULL)) {
 			whack_log(RC_ROUTE, whackfd,
 				  "no connection or alias '%s'",
 				  m->name);
@@ -500,38 +636,40 @@ static bool whack_process(struct fd *whackfd, const struct whack_message *const 
 
 	if (m->whack_terminate) {
 		passert(m->name != NULL);
-		terminate_connection(m->name, TRUE);
+		terminate_connection(m->name, true, whackfd);
 	}
 
-	struct show s = {
-		.whackfd = whackfd,
-		.spacer = false,
-	};
+	{
+		struct show *s = new_show(whackfd); /* must free */
 
-	if (m->whack_status)
-		show_status(whackfd);
+		if (m->whack_status)
+			show_status(s);
 
-	if (m->whack_global_status)
-		show_global_status(whackfd);
+		if (m->whack_global_status)
+			show_global_status(s);
 
-	if (m->whack_clear_stats)
-		clear_pluto_stats();
+		if (m->whack_clear_stats)
+			clear_pluto_stats();
 
-	if (m->whack_traffic_status)
-		show_traffic_status(whackfd, m->name);
+		if (m->whack_traffic_status)
+			show_traffic_status(s, m->name);
 
-	if (m->whack_shunt_status) {
-		show_shunt_status(&s);
+		if (m->whack_shunt_status)
+			show_shunt_status(s);
+
+		if (m->whack_fips_status)
+			show_fips_status(s);
+
+		if (m->whack_brief_status)
+			show_brief_status(s);
+		if (m->whack_addresspool_status)
+			show_addresspool_status(s);
+
+		if (m->whack_show_states)
+			show_states(s);
+
+		free_show(&s);
 	}
-
-	if (m->whack_fips_status)
-		show_fips_status(whackfd);
-
-	if (m->whack_brief_status)
-		show_brief_status(whackfd);
-
-	if (m->whack_show_states)
-		show_states(&s);
 
 #ifdef HAVE_SECCOMP
 	if (m->whack_seccomp_crashtest) {
@@ -664,8 +802,11 @@ static bool whack_handle(struct fd *whackfd)
 
 			if (msg.magic == WHACK_BASIC_MAGIC) {
 				/* Only basic commands.  Simpler inter-version compatibility. */
-				if (msg.whack_status)
-					show_status(whackfd);
+				if (msg.whack_status) {
+					struct show *s = new_show(whackfd);
+					show_status(s);
+					free_show(&s);
+				}
 				/* bail early, but without complaint */
 				return false; /* don't shutdown */
 			}

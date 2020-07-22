@@ -19,9 +19,12 @@
 
 #include <stdint.h>		/* for intmax_t */
 
+#include "monotime.h"
+
 struct state;
 struct ike_sa;
 struct msg_digest;
+struct state_v2_microcode;
 enum message_role;
 
 /*
@@ -42,14 +45,8 @@ typedef stf_status v2_msgid_pending_cb(struct ike_sa *ike,
 				       struct state *st,
 				       struct msg_digest *md);
 
-struct v2_msgid_pending {
-	so_serial_t st_serialno;
-	const enum isakmp_xchg_types ix;
-	v2_msgid_pending_cb *cb;
-	struct v2_msgid_pending *next;
-};
-
 struct v2_msgid_window {
+	monotime_t last_contact;  /* received a message */
 	intmax_t sent;
 	intmax_t recv;
 	struct v2_msgid_pending *pending;
@@ -86,13 +83,19 @@ void v2_msgid_free(struct state *st);
 void v2_msgid_start_responder(struct ike_sa *ike, struct state *responder,
 			      const struct msg_digest *md);
 
-void v2_msgid_switch_responder(struct ike_sa *ike, struct child_sa *child,
-			       const struct msg_digest *md);
+void v2_msgid_switch_responder_to_child(struct ike_sa *ike, struct child_sa *child,
+					struct msg_digest *md, where_t where);
+void v2_msgid_switch_responder_from_aborted_child(struct ike_sa *ike, struct child_sa **child,
+						  struct msg_digest *md, where_t where);
+
 void v2_msgid_switch_initiator(struct ike_sa *ike, struct child_sa *child,
 			       const struct msg_digest *md);
 
 void v2_msgid_cancel_responder(struct ike_sa *ike, struct state *responder,
 			       const struct msg_digest *md);
+
+bool v2_msgid_request_outstanding(struct ike_sa *ike);
+bool v2_msgid_request_pending(struct ike_sa *ike);
 
 /*
  * Processing has finished - recv's accepted or sent is on its way -
@@ -124,11 +127,12 @@ void v2_msgid_update_sent(struct ike_sa *ike, struct state *sender,
  * Complicating this is how each individual initiate code path needs
  * to be modified so that delays calling queue_initiator() until it is
  * ready to actually send (and a message id can be assigned).  Would
- * it be simplier if there was a gate keeper that assigned request
+ * it be simpler if there was a gate keeper that assigned request
  * message id up front, but only when one was available?
  */
 void v2_msgid_queue_initiator(struct ike_sa *ike, struct state *st,
 			      enum isakmp_xchg_types ix,
+			      const struct state_v2_microcode *transition,
 			      v2_msgid_pending_cb *callback);
 void v2_msgid_schedule_next_initiator(struct ike_sa *ike);
 

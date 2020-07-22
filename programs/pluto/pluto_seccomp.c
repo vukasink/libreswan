@@ -20,7 +20,7 @@
 #include <unistd.h>
 
 #include "defs.h"
-#include "lswlog.h"
+#include "log.h"
 
 #define LSW_SECCOMP_EXIT_FAIL PLUTO_EXIT_SECCOMP_FAIL
 #include "lswseccomp.h"
@@ -33,8 +33,8 @@ static void init_seccomp(uint32_t def_action, bool main)
 {
 	scmp_filter_ctx ctx = seccomp_init(def_action);
 	if (ctx == NULL) {
-			libreswan_log("seccomp_init() failed!");
-			exit_pluto(PLUTO_EXIT_SECCOMP_FAIL);
+		plog_global("seccomp_init() failed!");
+		exit_pluto(PLUTO_EXIT_SECCOMP_FAIL);
 	}
 
 	/*
@@ -59,24 +59,25 @@ static void init_seccomp(uint32_t def_action, bool main)
 
 	/* needed for pluto and updown, not helpers */
 	if (main) {
+		LSW_SECCOMP_ADD(ctx, _llseek);
 		LSW_SECCOMP_ADD(ctx, accept);
 		LSW_SECCOMP_ADD(ctx, access);
 		LSW_SECCOMP_ADD(ctx, bind);
 		LSW_SECCOMP_ADD(ctx, brk);
 		LSW_SECCOMP_ADD(ctx, chdir);
 		LSW_SECCOMP_ADD(ctx, clone);
-		LSW_SECCOMP_ADD(ctx, close);
 		LSW_SECCOMP_ADD(ctx, connect);
 		LSW_SECCOMP_ADD(ctx, dup);
 		LSW_SECCOMP_ADD(ctx, dup2);
+		LSW_SECCOMP_ADD(ctx, dup3);
 		LSW_SECCOMP_ADD(ctx, epoll_create);
+		LSW_SECCOMP_ADD(ctx, epoll_create1);
 		LSW_SECCOMP_ADD(ctx, epoll_ctl);
 		LSW_SECCOMP_ADD(ctx, epoll_wait);
 		LSW_SECCOMP_ADD(ctx, epoll_pwait);
 		LSW_SECCOMP_ADD(ctx, execve);
 		LSW_SECCOMP_ADD(ctx, faccessat);
 		LSW_SECCOMP_ADD(ctx, fadvise64);
-		LSW_SECCOMP_ADD(ctx, fcntl);
 		LSW_SECCOMP_ADD(ctx, getcwd);
 		LSW_SECCOMP_ADD(ctx, getdents);
 		LSW_SECCOMP_ADD(ctx, getdents64);
@@ -85,7 +86,7 @@ static void init_seccomp(uint32_t def_action, bool main)
 		LSW_SECCOMP_ADD(ctx, getgid);
 		LSW_SECCOMP_ADD(ctx, getgroups);
 		LSW_SECCOMP_ADD(ctx, getpgrp);
-		LSW_SECCOMP_ADD(ctx, getpid);
+		LSW_SECCOMP_ADD(ctx, getpgid);
 		LSW_SECCOMP_ADD(ctx, getppid);
 		LSW_SECCOMP_ADD(ctx, getrandom); /* for unbound */
 		LSW_SECCOMP_ADD(ctx, getrlimit);
@@ -98,14 +99,14 @@ static void init_seccomp(uint32_t def_action, bool main)
 		LSW_SECCOMP_ADD(ctx, munmap);
 		LSW_SECCOMP_ADD(ctx, newfstatat);
 		LSW_SECCOMP_ADD(ctx, open);
-		LSW_SECCOMP_ADD(ctx, openat);
 		LSW_SECCOMP_ADD(ctx, pipe);
 		LSW_SECCOMP_ADD(ctx, pipe2);
 		LSW_SECCOMP_ADD(ctx, poll);
+		LSW_SECCOMP_ADD(ctx, ppoll);
 		LSW_SECCOMP_ADD(ctx, prctl);
-		LSW_SECCOMP_ADD(ctx, pread64);
 		LSW_SECCOMP_ADD(ctx, prlimit64);
 		LSW_SECCOMP_ADD(ctx, readlink);
+		LSW_SECCOMP_ADD(ctx, readlinkat);
 		LSW_SECCOMP_ADD(ctx, recvfrom);
 		LSW_SECCOMP_ADD(ctx, recvmsg);
 		LSW_SECCOMP_ADD(ctx, select);
@@ -124,10 +125,13 @@ static void init_seccomp(uint32_t def_action, bool main)
 	/* common to pluto and helpers */
 
 	LSW_SECCOMP_ADD(ctx, arch_prctl);
+	LSW_SECCOMP_ADD(ctx, close);
 	LSW_SECCOMP_ADD(ctx, exit_group);
 	LSW_SECCOMP_ADD(ctx, exit);
+	LSW_SECCOMP_ADD(ctx, getpid);
 	LSW_SECCOMP_ADD(ctx, gettid);
 	LSW_SECCOMP_ADD(ctx, gettimeofday);
+	LSW_SECCOMP_ADD(ctx, fcntl);
 	LSW_SECCOMP_ADD(ctx, fstat);
 	LSW_SECCOMP_ADD(ctx, futex);
 	LSW_SECCOMP_ADD(ctx, lseek);
@@ -135,10 +139,13 @@ static void init_seccomp(uint32_t def_action, bool main)
 	LSW_SECCOMP_ADD(ctx, mmap);
 	LSW_SECCOMP_ADD(ctx, mprotect);
 	LSW_SECCOMP_ADD(ctx, nanosleep);
+	LSW_SECCOMP_ADD(ctx, openat);
+	LSW_SECCOMP_ADD(ctx, pread64);
 	LSW_SECCOMP_ADD(ctx, rt_sigaction);
 	LSW_SECCOMP_ADD(ctx, rt_sigprocmask);
 	LSW_SECCOMP_ADD(ctx, rt_sigreturn);
 	LSW_SECCOMP_ADD(ctx, sched_setparam);
+	LSW_SECCOMP_ADD(ctx, send);
 	LSW_SECCOMP_ADD(ctx, sendto);
 	LSW_SECCOMP_ADD(ctx, set_tid_address);
 	LSW_SECCOMP_ADD(ctx, sigaltstack);
@@ -155,17 +162,43 @@ static void init_seccomp(uint32_t def_action, bool main)
 		seccomp_release(ctx);
 		exit_pluto(PLUTO_EXIT_SECCOMP_FAIL);
 	}
-
-	libreswan_log("seccomp security enabled");
 }
 
-void init_seccomp_main(uint32_t def_action)
+void init_seccomp_main(void)
 {
-	init_seccomp(def_action, TRUE);
+	switch (pluto_seccomp_mode) {
+	case SECCOMP_ENABLED:
+		init_seccomp(SCMP_ACT_KILL, true);
+		plog_global("seccomp security enabled in strict mode");
+		break;
+	case SECCOMP_TOLERANT:
+		init_seccomp(SCMP_ACT_TRAP, true);
+		plog_global("seccomp security enabled in tolerant mode");
+		break;
+	case SECCOMP_DISABLED:
+		plog_global("seccomp security disabled");
+		break;
+	default:
+		bad_case(pluto_seccomp_mode);
+	}
+
 }
 
-void init_seccomp_cryptohelper(uint32_t def_action)
+void init_seccomp_cryptohelper(int helpernum)
 {
-	init_seccomp(def_action, FALSE);
+	switch (pluto_seccomp_mode) {
+	case SECCOMP_ENABLED:
+		init_seccomp(SCMP_ACT_KILL, false);
+		plog_global("seccomp security enabled in strict mode for crypto helper %d", helpernum);
+		break;
+	case SECCOMP_TOLERANT:
+		init_seccomp(SCMP_ACT_TRAP, false);
+		plog_global("seccomp security enabled in tolerant mode for crypto helper %d", helpernum);
+		break;
+	case SECCOMP_DISABLED:
+		plog_global("seccomp security disabled for crypto helper %d", helpernum);
+		break;
+	default:
+		bad_case(pluto_seccomp_mode);
+	}
 }
-

@@ -75,7 +75,7 @@ struct dh_secret {
 static void lswlog_dh_secret(struct lswlog *buf, struct dh_secret *secret)
 {
 	lswlogf(buf, "DH secret %s@%p: ",
-		secret->group->common.name, secret);
+		secret->group->common.fqn, secret);
 }
 
 struct dh_secret *calc_dh_secret(const struct dh_desc *group,
@@ -223,6 +223,5 @@ void submit_dh(struct state *st, chunk_t remote_ke,
 	task->remote_ke = clone_hunk(remote_ke, "DH crypto");
 	transfer_dh_secret_to_helper(st, "DH", &task->local_secret);
 	task->cb = cb;
-	submit_crypto(STATE_LOGGER(st), st,
-		      task, &dh_handler, name);
+	submit_crypto(st->st_logger, st, task, &dh_handler, name);
 }

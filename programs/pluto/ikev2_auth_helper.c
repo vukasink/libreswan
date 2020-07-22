@@ -71,14 +71,16 @@ bool submit_v2_auth_signature(struct ike_sa *ike,
 	const struct connection *c = ike->sa.st_connection;
 	switch (authby) {
 	case AUTHBY_RSASIG:
-		task.pks = get_connection_private_key(c, &pubkey_type_rsa);
+		task.pks = get_connection_private_key(c, &pubkey_type_rsa,
+						      ike->sa.st_logger);
 		if (task.pks == NULL)
 			/* failure: no key to use */
 			return false;
 		break;
 
 	case AUTHBY_ECDSA:
-		task.pks = get_connection_private_key(c, &pubkey_type_ecdsa);
+		task.pks = get_connection_private_key(c, &pubkey_type_ecdsa,
+						      ike->sa.st_logger);
 		if (task.pks == NULL)
 			/* failure: no key to use */
 			return false;
@@ -86,8 +88,7 @@ bool submit_v2_auth_signature(struct ike_sa *ike,
 	default:
 		bad_case(authby);
 	}
-	submit_crypto(STATE_LOGGER(&ike->sa),
-		      &ike->sa /*state to resume*/,
+	submit_crypto(ike->sa.st_logger, &ike->sa /*state to resume*/,
 		      clone_thing(task, "signature task"),
 		      &v2_auth_signature_handler,
 		      "computing responder signature");

@@ -109,7 +109,7 @@ static void dbg_log_dns_question(struct p_dns_req *dnsr,
 				ldns_rr_list_rr(
 					ldns_pkt_question(ldnspkt), i));
 		if (status != LDNS_STATUS_OK) {
-			DBG(DBG_DNS, DBG_log("could not parse DNS QUESTION section for %s", dnsr->dbg_buf));
+			dbg("could not parse DNS QUESTION section for %s", dnsr->dbg_buf);
 			return;
 		}
 	}
@@ -241,7 +241,7 @@ static err_t add_rsa_pubkey_to_pluto(struct p_dns_req *dnsr, ldns_rdf *rdf,
 	 * negotiating
 	 */
 	uint32_t ttl_used = max(ttl, (uint32_t)RETRANSMIT_TIMEOUT_DEFAULT);
-	char ttl_buf[ULTOT_BUF + 32]; /* 32 is aribitary */
+	char ttl_buf[ULTOT_BUF + 32]; /* 32 is arbitrary */
 
 	if (ttl_used == ttl) {
 		snprintf(ttl_buf, sizeof(ttl_buf), "ttl %u", ttl);
@@ -301,8 +301,6 @@ static void validate_address(struct p_dns_req *dnsr, unsigned char *addr)
 {
 	struct state *st = state_with_serialno(dnsr->so_serial_t);
 	ip_address ipaddr;
-	ipstr_buf ra;
-	ipstr_buf rb;
 	const struct ip_info *afi = address_type(&st->st_remote_endpoint);
 
 	if (dnsr->qtype != LDNS_RR_TYPE_A) {
@@ -314,18 +312,18 @@ static void validate_address(struct p_dns_req *dnsr, unsigned char *addr)
 		return;
 
 	if (!sameaddr(&ipaddr, &st->st_remote_endpoint)) {
-		DBG(DBG_DNS,
-			DBG_log(" forward address of IDi %s do not match remote address %s != %s",
-				dnsr->qname,
-				ipstr(&st->st_remote_endpoint, &ra),
-				ipstr(&ipaddr, &rb)));
+		address_buf ra, rb;
+		dbg(" forward address of IDi %s do not match remote address %s != %s",
+		    dnsr->qname,
+		    str_address(&st->st_remote_endpoint, &ra),
+		    str_address(&ipaddr, &rb));
 		return;
 	}
 
 	dnsr->fwd_addr_valid = TRUE;
-	DBG(DBG_DNS, DBG_log("address of IDi %s match remote address %s",
-				dnsr->qname,
-				ipstr(&st->st_remote_endpoint, &ra)));
+	address_buf ra;
+	dbg("address of IDi %s match remote address %s",
+	    dnsr->qname, str_address(&st->st_remote_endpoint, &ra));
 }
 
 static err_t parse_rr(struct p_dns_req *dnsr, ldns_pkt *ldnspkt)
@@ -356,18 +354,15 @@ static err_t parse_rr(struct p_dns_req *dnsr, ldns_pkt *ldnspkt)
 		output = ldns_buffer_new((dnsr->wire_len * 8/6 + 2 +1) * 2);
 
 		if (qclass != dnsr->qclass) {
-			DBG(DBG_DNS,
-				DBG_log("dns answer %zu qclass mismatch expect %s vs %s ignore the answer now",
-					i, class_e->name, class->name));
+			dbg("dns answer %zu qclass mismatch expect %s vs %s ignore the answer now",
+			    i, class_e->name, class->name);
 			/* unexpected qclass. possibly malfuctioning dns */
 			continue;
 		}
 
 		rdf = ldns_rr_rdf(ans, 0);
 		if (rdf == NULL) {
-			DBG(DBG_DNS,
-				DBG_log("dns answer %zu did not convert to rdf ignore this answer",
-					i));
+			dbg("dns answer %zu did not convert to rdf ignore this answer", i);
 			continue;
 		}
 
@@ -418,7 +413,7 @@ static err_t parse_rr(struct p_dns_req *dnsr, ldns_pkt *ldnspkt)
 			continue;
 		}
 
-		DBG(DBG_DNS, DBG_log("%s", ldns_buffer_begin(output)));
+		dbg("%s", ldns_buffer_begin(output));
 		ldns_buffer_free(output);
 		output = NULL;
 
@@ -432,9 +427,8 @@ static err_t parse_rr(struct p_dns_req *dnsr, ldns_pkt *ldnspkt)
 
 		if (atype != dnsr->qtype) {
 			/* dns server stuffed extra rr types, ignore */
-			DBG(DBG_DNS,
-				DBG_log("dns answer %zu qtype mismatch expect %d vs %d ignore this answer",
-					i, dnsr->qtype, atype));
+			dbg("dns answer %zu qtype mismatch expect %d vs %d ignore this answer",
+			    i, dnsr->qtype, atype);
 		}
 	}
 
@@ -466,7 +460,7 @@ static err_t process_dns_resp(struct p_dns_req *dnsr)
 
 	case UB_EVENT_INSECURE:
 		if (impair.allow_dns_insecure) {
-			DBG(DBG_DNS, DBG_log("Allowing insecure DNS response due to impair"));
+			libreswan_log("IMPAIR: allowing insecure DNS response");
 			return parse_rr(dnsr, ldnspkt);
 		}
 		return "unbound returned INSECURE response - ignored";
@@ -506,38 +500,38 @@ void free_ipseckey_dns(struct p_dns_req *d)
 static void ikev2_ipseckey_log_missing_st(struct p_dns_req *dnsr)
 {
 	deltatime_t served_delta = realtimediff(dnsr->done_time, dnsr->start_time);
-	LSWLOG_RC(RC_LOG_SERIOUS, buf) {
-		lswlogf(buf, "%s The state #%lu is gone. %s returned %s elapsed time ",
-			dnsr->dbg_buf, dnsr->so_serial_t,
-			dnsr->log_buf, dnsr->rcode_name);
-		lswlog_deltatime(buf, served_delta);
-	}
+	deltatime_buf db;
+	log_global(RC_LOG_SERIOUS, null_fd,
+		   "%s The state #%lu is gone. %s returned %s elapsed time %s seconds",
+		   dnsr->dbg_buf, dnsr->so_serial_t,
+		   dnsr->log_buf, dnsr->rcode_name,
+		   str_deltatime(served_delta, &db));
 }
 
-static void ikev2_ipseckey_log_dns_err(struct p_dns_req *dnsr,
-		const char *err)
+static void ikev2_ipseckey_log_dns_err(struct state *st,
+				       struct p_dns_req *dnsr,
+				       const char *err)
 {
 	deltatime_t served_delta = realtimediff(dnsr->done_time, dnsr->start_time);
-	LSWLOG_RC(RC_LOG_SERIOUS, buf) {
-		lswlogf(buf, "%s returned %s rr parse error %s elapsed time ",
-			dnsr->log_buf,
-			dnsr->rcode_name, err);
-		lswlog_deltatime(buf, served_delta);
-	}
+	deltatime_buf db;
+	log_state(RC_LOG_SERIOUS, st,
+		  "%s returned %s rr parse error %s elapsed time %s seconds",
+		  dnsr->log_buf,
+		  dnsr->rcode_name, err,
+		  str_deltatime(served_delta, &db));
 }
 
 static void ipseckey_dbg_dns_resp(struct p_dns_req *dnsr)
 {
 	deltatime_t served_delta = realtimediff(dnsr->done_time, dnsr->start_time);
-	LSWDBGP(DBG_CONTROL, buf) {
-		lswlogf(buf, "%s returned %s cache=%s elapsed time ",
-			dnsr->log_buf,
-			dnsr->rcode_name,
-			bool_str(dnsr->cache_hit));
-		lswlog_deltatime(buf, served_delta);
-	}
+	deltatime_buf db;
+	dbg("%s returned %s cache=%s elapsed time %s seconds",
+	    dnsr->log_buf,
+	    dnsr->rcode_name,
+	    bool_str(dnsr->cache_hit),
+	    str_deltatime(served_delta, &db));
 
-	DBG(DBG_DNS, {
+	if (DBGP(DBG_BASE)) {
 		const enum lswub_resolve_event_secure_kind k = dnsr->secure;
 
 		DBG_log("DNSSEC=%s %s MSG SIZE %d bytes",
@@ -548,7 +542,7 @@ static void ipseckey_dbg_dns_resp(struct p_dns_req *dnsr)
 
 			k == UB_EVENT_BOGUS ? dnsr->why_bogus : "",
 			dnsr->wire_len);
-	});
+	}
 }
 
 static void idr_ipseckey_fetch_continue(struct p_dns_req *dnsr)
@@ -571,7 +565,7 @@ static void idr_ipseckey_fetch_continue(struct p_dns_req *dnsr)
 	parse_err = process_dns_resp(dnsr);
 
 	if (parse_err != NULL) {
-		ikev2_ipseckey_log_dns_err(dnsr, parse_err);
+		ikev2_ipseckey_log_dns_err(st, dnsr, parse_err);
 	}
 
 	if (dnsr->cache_hit) {
@@ -658,15 +652,13 @@ static void idi_a_fetch_continue(struct p_dns_req *dnsr)
 	st->ipseckey_fwd_dnsr = NULL;
 
 	if (st->ipseckey_dnsr != NULL) {
-		DBG(DBG_CONTROL, DBG_log("wait for IPSECKEY DNS response %s",
-					dnsr->qname));
+		dbg("wait for IPSECKEY DNS response %s", dnsr->qname);
 		/* wait for additional A/AAAA dns response */
 		free_ipseckey_dns(dnsr);
 		return;
 	}
 
-	DBG(DBG_CONTROL, DBG_log("%s unsuspend id=%s", dnsr->dbg_buf,
-				dnsr->qname));
+	dbg("%s unsuspend id=%s", dnsr->dbg_buf, dnsr->qname);
 
 	free_ipseckey_dns(dnsr);
 
@@ -695,7 +687,7 @@ static void idi_ipseckey_fetch_continue(struct p_dns_req *dnsr)
 	parse_err = process_dns_resp(dnsr);
 
 	if (parse_err != NULL) {
-		ikev2_ipseckey_log_dns_err(dnsr, parse_err);
+		ikev2_ipseckey_log_dns_err(st, dnsr, parse_err);
 	}
 
 	if (dnsr->rcode == 0 && parse_err == NULL) {
@@ -723,14 +715,12 @@ static void idi_ipseckey_fetch_continue(struct p_dns_req *dnsr)
 	st->ipseckey_dnsr = NULL;
 
 	if (st->ipseckey_fwd_dnsr != NULL) {
-		DBG(DBG_CONTROL, DBG_log("wait for additional DNS A/AAAA check %s",
-					dnsr->qname));
+		dbg("wait for additional DNS A/AAAA check %s", dnsr->qname);
 		/* wait for additional A/AAAA dns response */
 		free_ipseckey_dns(dnsr);
 		return;
 	} else {
-		DBG(DBG_CONTROL, DBG_log("%s unsuspend id=%s", dnsr->dbg_buf,
-					dnsr->qname));
+		dbg("%s unsuspend id=%s", dnsr->dbg_buf, dnsr->qname);
 		free_ipseckey_dns(dnsr);
 		idi_ipseckey_fetch_tail(st, err);
 	}
@@ -858,7 +848,7 @@ static stf_status dns_qry_start(struct p_dns_req *dnsr)
 
 	passert(get_unbound_ctx() != NULL);
 
-	DBG(DBG_CONTROL, DBG_log("%s start %s", dnsr->dbg_buf, dnsr->log_buf));
+	dbg("%s start %s", dnsr->dbg_buf, dnsr->log_buf);
 
 	dnsr->start_time = realnow();
 
@@ -919,7 +909,7 @@ stf_status idr_ipseckey_fetch(struct state *st)
 /*
  * On responder query IPSECKEY for IDi, it could be FQDN or IP.
  * The returned ipsec key(s) will be added to public store, with keyid IDi.
- * New key(s) will overwrite any exisitng one(s) with same keyid in pluto's
+ * New key(s) will overwrite any existing one(s) with same keyid in pluto's
  * global public key store.
  *
  * If DNS returns multiple IPSECKEY RR add all of keys, with same keyid.

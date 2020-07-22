@@ -54,7 +54,7 @@ enum iface_status handle_packet_cb(const struct iface_port *ifp);
  * A message digest (struct msg_digest) holds the dissected
  * packet (and more) during a state transition.  This gets
  * a bit muddied by the way packet fragments are re-assembled
- * and the way asyncronous processing cause state transitions
+ * and the way asynchronous processing cause state transitions
  * to be suspended (eg. crypto helper work).  Think of those
  * things as being within a single state transition.
  */
@@ -76,6 +76,50 @@ struct payload_summary {
 	uint8_t data[1];
 	size_t data_size;
 };
+
+/*
+ * Compact enum of useful-to-pluto IKEv2 payloads.  Unlike the
+ * official numbers, these are contiguous.
+ */
+
+enum v2_pbs {
+	PBS_v2_INVALID = 0,
+
+	PBS_v2N_REKEY_SA,
+	PBS_v2N_NO_PPK_AUTH,
+	PBS_v2N_PPK_IDENTITY,
+	PBS_v2N_SIGNATURE_HASH_ALGORITHMS,
+	PBS_v2N_NULL_AUTH,
+	PBS_v2N_IPCOMP_SUPPORTED,
+	PBS_v2N_IKEV2_FRAGMENTATION_SUPPORTED,
+	PBS_v2N_USE_PPK,
+	PBS_v2N_REDIRECTED_FROM,
+	PBS_v2N_REDIRECT_SUPPORTED,
+	PBS_v2N_NAT_DETECTION_SOURCE_IP,
+	PBS_v2N_NAT_DETECTION_DESTINATION_IP,
+	PBS_v2N_ESP_TFC_PADDING_NOT_SUPPORTED,
+	PBS_v2N_USE_TRANSPORT_MODE,
+	PBS_v2N_MOBIKE_SUPPORTED,
+	PBS_v2N_INITIAL_CONTACT,
+	PBS_v2N_REDIRECT,
+	PBS_v2N_INVALID_SYNTAX,
+	PBS_v2N_AUTHENTICATION_FAILED,
+	PBS_v2N_UNSUPPORTED_CRITICAL_PAYLOAD,
+	PBS_v2N_COOKIE,
+	PBS_v2N_COOKIE2,
+	PBS_v2N_INVALID_KE_PAYLOAD,
+	PBS_v2N_INVALID_MAJOR_VERSION,
+	PBS_v2N_TS_UNACCEPTABLE,
+
+	PBS_v2_ROOF,
+};
+
+#if 0
+enum v1_pbs {
+	PBS_v1_INVALID,
+	PBS_v1_ROOF,
+};
+#endif
 
 /* message digest
  * Note: raw_packet and packet_pbs are "owners" of space on heap.
@@ -105,24 +149,13 @@ struct msg_digest {
 	bool fake_clone;			/* is this a fake (clone) message */
 	bool fake_dne;				/* created as part of fake_md() */
 
-	struct {
-		bool fragmentation_supported;
-		bool use_ppk;
-		struct payload_digest *no_ppk_auth;
-		struct payload_digest *ppk_identity;
-		bool redirected_from;
-		bool redirect_supported;
-		struct payload_digest *redirect;
-		bool nat_detection_source_ip;
-		bool nat_detection_destination_ip;
-		struct payload_digest *signature_hash_algorithms;
-		struct payload_digest *null_auth;
-		bool esp_tfc_padding_not_supported;
-		bool use_transport_mode;
-		bool mobike_supported;
-		bool initial_contact;
-		struct payload_digest *ipcomp_supported;
-	} v2N;
+	/*
+	 * Note that .pbs[] is indexed using either enum v1_pbs or
+	 * enum v2_pbs and not exchange type, v2_notification_t, ....
+	 * This is because the former is contiguous, while the latter
+	 * is very very sparse.
+	 */
+	const struct pbs_in *pbs[PBS_v2_ROOF];
 
 	/*
 	 * The packet PBS contains a message PBS and the message PBS
@@ -152,7 +185,7 @@ struct msg_digest {
 	 * than LELEM_ROOF.  This is because the next-payload
 	 * (converted to a bit map) is also stored in lset_t (lset_t
 	 * has LELEM_ROOF as its bound). Any larger value, such as
-	 * v2IKE_FRAGMENTATION, must have been droped before things
+	 * v2IKE_FRAGMENTATION, must have been dropped before things
 	 * get this far.
 	 *
 	 * XXX: While the real upper bound is closer to 53 (vs 64)
@@ -161,18 +194,21 @@ struct msg_digest {
 	 *
 	 * XXX: Even though the IKEv2 values start at 33, they are not
 	 * biased to save space.  This is because it would break the
-	 * 1:1 correspondance between the wire-value, this array, and
+	 * 1:1 correspondence between the wire-value, this array, and
 	 * the lset_t bit (at one point the lset_t values were biased,
 	 * the result was confusing custom mapping code everywhere).
 	 */
 	struct payload_digest *chain[LELEM_ROOF];
+	struct payload_digest *last[LELEM_ROOF];
 	struct isakmp_quirks quirks;
 };
 
 enum ike_version hdr_ike_version(const struct isakmp_hdr *hdr);
 enum message_role v2_msg_role(const struct msg_digest *md);
 
-extern struct msg_digest *alloc_md(const char *mdname);
+extern struct msg_digest *alloc_md(const struct iface_port *ifp,
+				   const ip_endpoint *sender,
+				   where_t where);
 struct msg_digest *md_addref(struct msg_digest *md, where_t where);
 void md_delref(struct msg_digest **mdp, where_t where);
 

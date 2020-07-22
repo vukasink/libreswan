@@ -2,7 +2,7 @@
 road #
  # ensure that clear text does not get through
 road #
- iptables -A INPUT -i eth0 -s 192.0.2.0/24 -j LOGDROP
+ iptables -A INPUT -i eth0 -s 192.0.2.0/24 -j DROP
 road #
  iptables -I INPUT -m policy --dir in --pol ipsec -j ACCEPT
 road #
@@ -30,7 +30,7 @@ road #
 000 "road-eastnet-nonat":   nflog-group: unset; mark: unset; vti-iface:unset; vti-routing:no; vti-shared:no; nic-offload:auto;
 000 "road-eastnet-nonat":   our idtype: ID_FQDN; our id=@road; their idtype: ID_FQDN; their id=@east
 000 "road-eastnet-nonat":   dpd: action:hold; delay:0; timeout:0; nat-t: encaps:auto; nat_keepalive:yes; ikev1_natt:both
-000 "road-eastnet-nonat":   newest ISAKMP SA: #0; newest IPsec SA: #0;
+000 "road-eastnet-nonat":   newest ISAKMP SA: #0; newest IPsec SA: #0; conn serial: $1;
 road #
  ipsec whack --impair suppress-retransmits
 road #
@@ -44,7 +44,7 @@ road #
 002 "road-eastnet-nonat" #2: IKEv2 mode peer ID is ID_FQDN: '@east'
 003 "road-eastnet-nonat" #1: authenticated using RSA with SHA2_512
 002 "road-eastnet-nonat" #2: negotiated connection [192.0.2.219-192.0.2.219:0-65535 0] -> [192.0.2.0-192.0.2.255:0-65535 0]
-004 "road-eastnet-nonat" #2: STATE_V2_IPSEC_I: IPsec SA established tunnel mode {ESP=>0xESPESP <0xESPESP xfrm=AES_GCM_16_256-NONE NATOA=none NATD=none DPD=passive}
+004 "road-eastnet-nonat" #2: STATE_V2_ESTABLISHED_CHILD_SA: IPsec SA established tunnel mode {ESP=>0xESPESP <0xESPESP xfrm=AES_GCM_16_256-NONE NATOA=none NATD=none DPD=passive}
 road #
  ../../pluto/bin/ping-once.sh --up 192.0.2.254
 up

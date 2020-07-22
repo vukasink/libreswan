@@ -33,6 +33,7 @@ struct state;
 struct msg_digest;
 struct bufferevent;
 struct iface_port;
+struct show;
 
 extern char *pluto_vendorid;
 
@@ -49,7 +50,6 @@ extern stf_status create_tcp_interface(struct state *st); /* TCP: terrible name?
 
 extern bool listening;  /* should we pay attention to IKE messages? */
 extern enum ddos_mode pluto_ddos_mode; /* auto-detect or manual? */
-extern enum seccomp_mode pluto_seccomp_mode;
 extern unsigned int pluto_max_halfopen; /* Max allowed half-open IKE SA's before refusing */
 extern unsigned int pluto_ddos_threshold; /* Max incoming IKE before activating DCOOKIES */
 extern deltatime_t pluto_shunt_lifetime; /* lifetime before we cleanup bare shunts (for OE) */
@@ -59,18 +59,23 @@ extern bool pluto_sock_errqueue; /* Enable MSG_ERRQUEUE on IKE socket */
 extern enum pluto_ddos_mode ddos_mode;
 extern bool pluto_drop_oppo_null;
 
-extern void show_debug_status(const struct fd *whackfd);
-extern void show_fips_status(const struct fd *whackfd);
+extern void show_debug_status(struct show *s);
+extern void show_fips_status(struct show *s);
 extern void call_server(char *conffile);
+
 typedef void event_callback_routine(evutil_socket_t, const short, void *);
-void fire_timer_photon_torpedo(struct event **evp, event_callback_fn cb, void *arg,
+
+void fire_timer_photon_torpedo(struct event **evp,
+			       event_callback_fn cb, void *arg,
 			       const deltatime_t delay);
+void attach_fd_read_sensor(struct event **ev, evutil_socket_t fd,
+			   event_callback_fn cb, void *arg);
+
 extern struct pluto_event *add_fd_read_event_handler(evutil_socket_t fd,
 						     event_callback_fn cb, void *arg,
 						     const char *name);
-struct evconnlistener *add_fd_accept_event_handler(struct iface_port *ifp,
-						   evconnlistener_cb cb);
 extern void delete_pluto_event(struct pluto_event **evp);
+
 extern void link_pluto_event_list(struct pluto_event *e);
 bool ev_before(struct pluto_event *pev, deltatime_t delay);
 extern void set_pluto_busy(bool busy);
@@ -84,7 +89,7 @@ extern struct event_base *get_pluto_event_base(void);
 /*
  * Schedule an event (with no timeout) to resume a suspended state.
  * SERIALNO (so_serial_t) is used to identify the state because the
- * state object may not be directly accessable (as happens with worker
+ * state object may not be directly accessible (as happens with worker
  * threads).
  *
  * For instance: a worker thread needing to resume processing of a

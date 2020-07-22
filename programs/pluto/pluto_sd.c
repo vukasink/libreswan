@@ -53,8 +53,8 @@ void pluto_sd_init(void)
  */
 void pluto_sd(int action, int status)
 {
-	DBG(DBG_CONTROL, DBG_log("pluto_sd: executing action %s(%d), status %d",
-		enum_name(&sd_action_names, action), action, status));
+	dbg("pluto_sd: executing action %s(%d), status %d",
+	    enum_name(&sd_action_names, action), action, status);
 
 	switch (action) {
 	case PLUTO_SD_WATCHDOG:
@@ -82,7 +82,7 @@ void pluto_sd(int action, int status)
 	}
 }
 
-void sd_watchdog_event(void)
+void sd_watchdog_event(struct fd *unused_whackfd UNUSED)
 {
 	pluto_sd(PLUTO_SD_WATCHDOG, SD_REPORT_NO_STATUS);
 }

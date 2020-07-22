@@ -1,6 +1,6 @@
 /* IKEv2 send packet routines, for Libreswan
  *
- * Copyright (C) 2018-2019 Andrew Cagney <cagney@gnu.org>
+ * Copyright (C) 2018-202- Andrew Cagney
  * Copyright (C) 2019 D. Hugh Redelmeier <hugh@mimosa.com>
  *
  * This program is free software; you can redistribute it and/or modify it
@@ -24,33 +24,59 @@
 struct msg_digest;
 struct dh_desc;
 struct ike_sa;
+struct v2_outgoing_fragment;
+struct v2_incomming_fragments;
 
-bool send_recorded_v2_ike_msg(struct state *st, const char *where);
+/*
+ * Should the payload be encrypted/protected (don't confuse this with
+ * authenticated)?
+ */
 
-void send_v2N_spi_response_from_state(struct ike_sa *st,
-				      struct msg_digest *md,
-				      enum ikev2_sec_proto_id protoid,
-				      ipsec_spi_t *spi,
-				      v2_notification_t type,
-				      const chunk_t *data /* optional */);
+enum payload_security {
+	ENCRYPTED_PAYLOAD = 1,
+	UNENCRYPTED_PAYLOAD,
+};
 
-void send_v2N_response_from_state(struct ike_sa *st,
-				  struct msg_digest *md,
-				  v2_notification_t type,
-				  const chunk_t *data /* optional */);
+void record_v2N_response(struct logger *logger,
+			 struct ike_sa *ike,
+			 struct msg_digest *md,
+			 v2_notification_t type,
+			 const chunk_t *data /* optional */,
+			 enum payload_security security);
+
+void record_v2N_spi_response(struct logger *logger,
+			     struct ike_sa *st,
+			     struct msg_digest *md,
+			     enum ikev2_sec_proto_id protoid,
+			     ipsec_spi_t *spi,
+			     v2_notification_t type,
+			     const chunk_t *data /* optional */,
+			     enum payload_security security);
+
+bool send_recorded_v2_message(struct ike_sa *ike, const char *where,
+			      enum message_role role);
 
 void send_v2N_response_from_md(struct msg_digest *md,
 			       v2_notification_t type,
 			       const chunk_t *data);
 
-void record_v2_delete(struct state *st);
-
-typedef bool payload_master_t(struct state *st, pb_stream *pbs);
+typedef bool payload_emitter_fn(struct state *st, pb_stream *pbs);
 
 extern stf_status record_v2_informational_request(const char *name,
 						  struct ike_sa *owner,
 						  struct state *sender,
-						  payload_master_t *payloads);
+						  payload_emitter_fn *emit_payloads);
+void record_v2_outgoing_fragment(struct pbs_out *pbs,
+				 const char *what,
+				 struct v2_outgoing_fragment **frags);
+void record_v2_message(struct ike_sa *ike,
+		       struct pbs_out *msg,
+		       const char *what,
+		       enum message_role message);
+
+void free_v2_message_queues(struct state *st);
+void free_v2_incomming_fragments(struct v2_incomming_fragments **frags);
+void free_v2_outgoing_fragments(struct v2_outgoing_fragment **frags);
 
 /*
  * Emit an IKEv2 payload.

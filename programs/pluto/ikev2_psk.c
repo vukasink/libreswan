@@ -65,10 +65,10 @@ static struct crypt_mac ikev2_calculate_psk_sighash(bool verify,
 	const struct connection *c = ike->sa.st_connection;
 	passert(authby == AUTHBY_PSK || authby == AUTHBY_NULL);
 
-	DBG(DBG_CONTROL, DBG_log("ikev2_calculate_psk_sighash() called from %s to %s PSK with authby=%s",
-		ike->sa.st_state->name,
-		verify ? "verify" : "create",
-		enum_name(&keyword_authby_names, authby)));
+	dbg("ikev2_calculate_psk_sighash() called from %s to %s PSK with authby=%s",
+	    ike->sa.st_state->name,
+	    verify ? "verify" : "create",
+	    enum_name(&keyword_authby_names, authby));
 
 	/* pick nullauth_pss, nonce, and nonce_name suitable for (state, verify) */
 
@@ -85,8 +85,6 @@ static struct crypt_mac ikev2_calculate_psk_sighash(bool verify,
 			nonce_name = "create: initiator inputs to hash2 (responder nonce)";
 			break;
 		}
-		/* FALL THROUGH */
-	case STATE_PARENT_I3:
 		/* we are initiator verifying PSK */
 		passert(verify);
 		nullauth_pss = &ike->sa.st_skey_chunk_SK_pr;
@@ -102,12 +100,24 @@ static struct crypt_mac ikev2_calculate_psk_sighash(bool verify,
 		nonce_name = "verify: initiator inputs to hash2 (responder nonce)";
 		break;
 
-	case STATE_PARENT_R2:
-		/* we are responder sending PSK */
-		passert(!verify);
-		nullauth_pss = &ike->sa.st_skey_chunk_SK_pr;
-		nonce = &ike->sa.st_ni;
-		nonce_name = "create: responder inputs to hash2 (initiator nonce)";
+	case STATE_V2_ESTABLISHED_IKE_SA:
+		/*
+		 * Presumably the IKE SA's state was changed before
+		 * the transition completed.
+		 */
+		if (verify) {
+			/* we are initiator verifying PSK */
+			passert(verify);
+			nullauth_pss = &ike->sa.st_skey_chunk_SK_pr;
+			nonce = &ike->sa.st_ni;
+			nonce_name = "verify: initiator inputs to hash2 (initiator nonce)";
+		} else {
+			/* we are responder sending PSK */
+			passert(!verify);
+			nullauth_pss = &ike->sa.st_skey_chunk_SK_pr;
+			nonce = &ike->sa.st_ni;
+			nonce_name = "create: responder inputs to hash2 (initiator nonce)";
+		}
 		break;
 
 	default:
@@ -119,7 +129,7 @@ static struct crypt_mac ikev2_calculate_psk_sighash(bool verify,
 	const chunk_t *pss;
 
 	if (authby != AUTHBY_NULL) {
-		pss = get_psk(c);
+		pss = get_psk(c, ike->sa.st_logger);
 		if (pss == NULL) {
 			loglog(RC_LOG_SERIOUS,"No matching PSK found for connection: %s",
 			      ike->sa.st_connection->name);
@@ -133,14 +143,14 @@ static struct crypt_mac ikev2_calculate_psk_sighash(bool verify,
 				       "FIPS: connection %s PSK length of %zu bytes is too short for %s PRF in FIPS mode (%zu bytes required)",
 				       ike->sa.st_connection->name,
 				       pss->len,
-				       ike->sa.st_oakley.ta_prf->common.name,
+				       ike->sa.st_oakley.ta_prf->common.fqn,
 				       key_size_min);
 				return empty_mac;
 			} else {
 				libreswan_log("WARNING: connection %s PSK length of %zu bytes is too short for %s PRF in FIPS mode (%zu bytes required)",
 					      ike->sa.st_connection->name,
 					      pss->len,
-					      ike->sa.st_oakley.ta_prf->common.name,
+					      ike->sa.st_oakley.ta_prf->common.fqn,
 					      key_size_min);
 			}
 		}
@@ -230,12 +240,12 @@ bool ikev2_verify_psk_auth(enum keyword_authby authby,
 	if (sig.len != hash_len) {
 		log_state(RC_LOG, &ike->sa,
 			  "hash length in I2 packet (%zu) does not equal hash length (%zu) of negotiated PRF (%s)",
-			  sig.len, hash_len, ike->sa.st_oakley.ta_prf->common.name);
+			  sig.len, hash_len, ike->sa.st_oakley.ta_prf->common.fqn);
 		return false;
 	}
 
 	struct crypt_mac calc_hash = ikev2_calculate_psk_sighash(TRUE, ike, authby, idhash,
-								 ike->sa.st_firstpacket_him);
+								 ike->sa.st_firstpacket_peer);
 	if (calc_hash.len == 0) {
 		return false;
 	}

@@ -35,6 +35,7 @@
 #include "connections.h"
 #include "ip_info.h"
 #include "iface.h"
+#include "demux.h"
 
 /*
  * (IKE v1) send fragments of packet.
@@ -51,11 +52,14 @@ static bool send_v1_frags(struct state *st, const char *where)
 {
 	unsigned int fragnum = 0;
 
-	/* Each fragment, if we are doing NATT, needs a non-ESP_Marker prefix.
-	 * natt_bonus is the size of the addition (0 if not needed).
+	/*
+	 * If we are doing NATT, so that the other end doesn't mistake
+	 * this message for ESP, each fragment needs a non-ESP_Marker
+	 * prefix.  natt_bonus is the size of the addition (0 if not
+	 * needed).
 	 */
 	const size_t natt_bonus =
-		st->st_interface->ike_float ? NON_ESP_MARKER_SIZE : 0;
+		st->st_interface->esp_encapsulation_enabled ? NON_ESP_MARKER_SIZE : 0;
 
 	/* We limit fragment packets to ISAKMP_FRAG_MAXLEN octets.
 	 * max_data_len is the maximum data length that will fit within it.
@@ -66,8 +70,8 @@ static bool send_v1_frags(struct state *st, const char *where)
 		(natt_bonus + NSIZEOF_isakmp_hdr +
 		 NSIZEOF_isakmp_ikefrag);
 
-	uint8_t *packet_cursor = st->st_tpacket.ptr;
-	size_t packet_remainder_len = st->st_tpacket.len;
+	uint8_t *packet_cursor = st->st_v1_tpacket.ptr;
+	size_t packet_remainder_len = st->st_v1_tpacket.len;
 
 	/* BUG: this code does not use the marshalling code
 	 * in packet.h to translate between wire and host format.
@@ -96,7 +100,7 @@ static bool send_v1_frags(struct state *st, const char *where)
 			struct isakmp_hdr *ih =
 				(struct isakmp_hdr *) frag_prefix;
 
-			memcpy(ih, st->st_tpacket.ptr, NSIZEOF_isakmp_hdr);
+			memcpy(ih, st->st_v1_tpacket.ptr, NSIZEOF_isakmp_hdr);
 			ih->isa_np = ISAKMP_NEXT_IKE_FRAGMENTATION; /* one octet */
 			/* Do we need to set any of ISAKMP_FLAGS_v1_ENCRYPTION?
 			 * Seems there might be disagreement between Cisco and Microsoft.
@@ -120,11 +124,10 @@ static bool send_v1_frags(struct state *st, const char *where)
 			fh->isafrag_flags = packet_remainder_len == data_len ?
 					    ISAKMP_FRAG_LAST : 0;
 		}
-		DBG(DBG_CONTROL,
-		    DBG_log("sending IKE fragment id '%d', number '%u'%s",
-			    1, /* hard coded for now, seems to be what all the cool implementations do */
-			    fragnum,
-			    packet_remainder_len == data_len ? " (last)" : ""));
+		dbg("sending IKE fragment id '%d', number '%u'%s",
+		    1, /* hard coded for now, seems to be what all the cool implementations do */
+		    fragnum,
+		    packet_remainder_len == data_len ? " (last)" : "");
 
 		if (!send_chunks_using_state(st, where,
 					     chunk2(frag_prefix,
@@ -140,19 +143,25 @@ static bool send_v1_frags(struct state *st, const char *where)
 
 static bool should_fragment_v1_ike_msg(struct state *st, size_t len, bool resending)
 {
-	if (st->st_interface != NULL && st->st_interface->ike_float)
+	/*
+	 * If we are doing NATT, so that the other end doesn't mistake
+	 * this message for ESP, each fragment needs a non-ESP_Marker
+	 * prefix.  natt_bonus is the size of the addition (0 if not
+	 * needed).
+	 */
+	if (st->st_interface != NULL && st->st_interface->esp_encapsulation_enabled)
 		len += NON_ESP_MARKER_SIZE;
 
 	/* This condition is complex.  Formatting is meant to help reader.
 	 *
-	 * Hugh thinks his banished style would make this earlier version
+	 * Hugh thinks peers banished style would make this earlier version
 	 * a little clearer:
 	 * len + natt_bonus
 	 *    >= (st->st_connection->addr_family == AF_INET
 	 *       ? ISAKMP_FRAG_MAXLEN_IPv4 : ISAKMP_FRAG_MAXLEN_IPv6)
 	 * && ((  resending
 	 *        && (st->st_connection->policy & POLICY_IKE_FRAG_ALLOW)
-	 *        && st->st_seen_fragvid)
+	 *        && st->st_seen_fragmentation_supported)
 	 *     || (st->st_connection->policy & POLICY_IKE_FRAG_FORCE)
 	 *     || st->st_seen_fragments))
 	 *
@@ -161,7 +170,7 @@ static bool should_fragment_v1_ike_msg(struct state *st, size_t len, bool resend
 	return len >= endpoint_type(&st->st_remote_endpoint)->ikev1_max_fragment_size &&
 	    (   (resending &&
 			(st->st_connection->policy & POLICY_IKE_FRAG_ALLOW) &&
-			st->st_seen_fragvid) ||
+			st->st_seen_fragmentation_supported) ||
 		(st->st_connection->policy & POLICY_IKE_FRAG_FORCE) ||
 		st->st_seen_fragments   );
 }
@@ -175,18 +184,19 @@ static bool send_or_resend_v1_ike_msg_from_state(struct state *st,
 		return FALSE;
 	}
 	/* another bandaid */
-	if (st->st_tpacket.ptr == NULL) {
-		libreswan_log("Cannot send packet - st_tpacket.ptr is NULL");
+	if (st->st_v1_tpacket.ptr == NULL) {
+		libreswan_log("Cannot send packet - st_v1_tpacket.ptr is NULL");
 		return false;
 	}
-	passert(st->st_v2_tfrags == NULL);
+
 	/*
-	 * Each fragment, if we are doing NATT, needs a non-ESP_Marker
+	 * If we are doing NATT, so that the other end doesn't mistake
+	 * this message for ESP, each fragment needs a non-ESP_Marker
 	 * prefix.  natt_bonus is the size of the addition (0 if not
 	 * needed).
 	 */
-	size_t natt_bonus = st->st_interface->ike_float ? NON_ESP_MARKER_SIZE : 0;
-	size_t len = st->st_tpacket.len;
+	size_t natt_bonus = st->st_interface->esp_encapsulation_enabled ? NON_ESP_MARKER_SIZE : 0;
+	size_t len = st->st_v1_tpacket.len;
 
 	passert(len != 0);
 
@@ -196,13 +206,13 @@ static bool send_or_resend_v1_ike_msg_from_state(struct state *st,
 	 * fragment.
 	 *
 	 * ??? why can't we fragment in STATE_MAIN_I1?  XXX: something
-	 * to do with the attacks inital packet?
+	 * to do with the attacks initial packet?
 	 */
 	if (st->st_state->kind != STATE_MAIN_I1 &&
 	    should_fragment_v1_ike_msg(st, len + natt_bonus, resending)) {
 		return send_v1_frags(st, where);
 	} else {
-		return send_chunk_using_state(st, where, st->st_tpacket);
+		return send_chunk_using_state(st, where, st->st_v1_tpacket);
 	}
 }
 
@@ -221,6 +231,32 @@ bool resend_recorded_v1_ike_msg(struct state *st, const char *where)
 
 bool record_and_send_v1_ike_msg(struct state *st, pb_stream *pbs, const char *what)
 {
-	record_outbound_ike_msg(st, pbs, what);
+	record_outbound_v1_ike_msg(st, pbs, what);
 	return send_or_resend_v1_ike_msg_from_state(st, what, FALSE);
+}
+
+void record_outbound_v1_ike_msg(struct state *st, pb_stream *pbs, const char *what)
+{
+	passert(pbs_offset(pbs) != 0);
+	free_v1_message_queues(st);
+	free_chunk_content(&st->st_v1_tpacket);
+	st->st_v1_tpacket = clone_out_pbs_as_chunk(pbs, what);
+	st->st_last_liveness = mononow();
+}
+
+void free_v1_message_queues(struct state *st)
+{
+	passert(st->st_ike_version == IKEv1);
+
+	struct v1_ike_rfrag *frag = st->st_v1_rfrags;
+	while (frag != NULL) {
+		struct v1_ike_rfrag *this = frag;
+
+		frag = this->next;
+		pexpect(this->md != NULL);
+		release_any_md(&this->md);
+		pfree(this);
+	}
+
+	st->st_v1_rfrags = NULL;
 }

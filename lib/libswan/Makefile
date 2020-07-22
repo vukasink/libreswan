@@ -48,7 +48,7 @@ OBJS += constants.o \
 	lswfips.o \
 	rangetosubnet.o sameaddr.o \
 	secrets.o \
-	subnettypeof.o ttoaddr.o ttodata.o ttoprotoport.o \
+	subnettypeof.o ttoaddr.o ttodata.o \
 	ttosa.o ttosubnet.o ttoul.o \
 	secitem_chunk.o \
 	base64_pubkey.o \
@@ -95,13 +95,18 @@ OBJS += shunk.o
 OBJS += hunk.o
 
 OBJS += ip_address.o
+OBJS += ip_encap.o
 OBJS += ip_endpoint.o
 OBJS += ip_info.o
+OBJS += ip_port.o
+OBJS += ip_port_range.o
 OBJS += ip_protocol.o
+OBJS += ip_protoport.o
 OBJS += ip_range.o
 OBJS += ip_said.o
-OBJS += ip_subnet.o
 OBJS += ip_selector.o
+OBJS += ip_sockaddr.o
+OBJS += ip_subnet.o
 
 OBJS += lmod.o
 OBJS += lset.o
@@ -122,13 +127,15 @@ OBJS += libreswan_log_errno.o
 OBJS += libreswan_bad_case.o
 
 OBJS += libreswan_log.o
-OBJS += libreswan_log_rc.o
+OBJS += loglog.o
 
 OBJS += log_pexpect.o
 
 OBJS += jambuf.o
 OBJS += jam_bytes.o
-OBJS += lswlog.o
+OBJS += log_message.o
+OBJS += log_va_list.o
+OBJS += log_nss_error.o
 OBJS += lswlog_nss_error.o
 OBJS += lswlog_nss_ckm.o
 OBJS += lswlog_nss_ckf.o
@@ -151,7 +158,7 @@ OBJS += ike_alg_prf_mac_nss_ops.o
 OBJS += ike_alg_prf_mac_xcbc_ops.o
 OBJS += ike_alg_prf_ikev1_mac_ops.o
 OBJS += ike_alg_prf_ikev2_mac_ops.o
-ifeq ($(USE_NSS_PRF),true)
+ifeq ($(USE_NSS_KDF),true)
 OBJS += ike_alg_prf_ikev1_nss_ops.o
 OBJS += ike_alg_prf_ikev2_nss_ops.o
 endif
@@ -196,22 +203,12 @@ ifeq ($(USE_NSS_AVA_COPY),true)
 OBJS += nss_copies.o
 endif
 
-ifeq ($(USE_UNBOUND_EVENT_H_COPY),true)
-CFLAGS+=-I${LIBRESWANSRCDIR}/include/unbound
-endif
-
 ifeq ($(USE_DNSSEC),true)
 OBJS += unbound.o
 endif
-
-# Original flags; this is a mess.
-CFLAGS+=${PORTINCLUDE} -I.
-CFLAGS+=-I${LIBRESWANSRCDIR}
-CFLAGS+= $(NSSFLAGS)
-CFLAGS+=-I${LIBRESWANSRCDIR}/include ${PORTINCLUDE}
-# XXX: hack until everything uses a consistent .c.o rule
-CFLAGS+=$(USERLAND_CFLAGS)
-CFLAGS+=${CROSSFLAGS}
+ifeq ($(USE_UNBOUND_EVENT_H_COPY),true)
+USERLAND_INCLUDES += -I$(top_srcdir)/include/unbound
+endif
 
 OBJS += $(abs_builddir)/version.o
 

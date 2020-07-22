@@ -43,82 +43,150 @@
 #include "kernel_xfrm_interface.h"
 #include "iface.h"
 #include "show.h"
+#ifdef HAVE_SECCOMP
+#include "pluto_seccomp.h"
+#endif
 
-void show_spacer(struct show *s)
+struct show {
+	/*
+	 * where to send the output
+	 */
+	struct fd *whackfd;
+	/*
+	 * Should the next output be preceded by a blank line?
+	 */
+	enum separation { NO_SEPARATOR = 1, HAD_OUTPUT, SEPARATE_NEXT_OUTPUT, } separator;
+};
+
+struct show *new_show(struct fd *whackfd)
 {
-	if (s->spacer) {
-		whack_comment(s->whackfd, " ");
-		s->spacer = false;
+	struct show s = {
+		.separator = NO_SEPARATOR,
+		.whackfd = whackfd,
+	};
+	return clone_thing(s, "on show");
+}
+
+void free_show(struct show **sp)
+{
+	{
+		struct show *s = *sp;
+		switch (s->separator) {
+		case NO_SEPARATOR:
+		case HAD_OUTPUT:
+			break;
+		case SEPARATE_NEXT_OUTPUT:
+			whack_comment(s->whackfd, " ");
+			break;
+		default:
+			bad_case(s->separator);
+		}
 	}
+	pfree(*sp);
+	*sp = NULL;
+}
+
+struct fd *show_fd(struct show *s)
+{
+	/* assume this is to for some whack log call */
+	switch (s->separator) {
+	case NO_SEPARATOR:
+	case HAD_OUTPUT:
+		break;
+	case SEPARATE_NEXT_OUTPUT:
+		whack_comment(s->whackfd, " ");
+		break;
+	default:
+		bad_case(s->separator);
+	}
+	s->separator = HAD_OUTPUT;
+	return s->whackfd;
+}
+
+void show_separator(struct show *s)
+{
+	switch (s->separator) {
+	case NO_SEPARATOR:
+		break;
+	case HAD_OUTPUT:
+	case SEPARATE_NEXT_OUTPUT:
+		s->separator = SEPARATE_NEXT_OUTPUT;
+		break;
+	default:
+		bad_case(s->separator);
+		break;
+	}
+}
+
+void show_jambuf(struct show *s, jambuf_t *buf)
+{
+	switch (s->separator) {
+	case NO_SEPARATOR:
+	case HAD_OUTPUT:
+		break;
+	case SEPARATE_NEXT_OUTPUT:
+		whack_comment(s->whackfd, " ");
+		break;
+	default:
+		bad_case(s->separator);
+	}
+	jambuf_to_whack(buf, s->whackfd, RC_COMMENT);
+	s->separator = HAD_OUTPUT;
 }
 
 void show_comment(struct show *s, const char *message, ...)
 {
-	show_spacer(s);
-	WHACK_LOG(RC_COMMENT, s->whackfd, buf) {
+	LSWBUF(buf) {
 		va_list args;
 		va_start(args, message);
 		jam_va_list(buf, message, args);
 		va_end(args);
+		show_jambuf(s, buf);
 	}
 }
 
-static void show_system_security(const struct fd *whackfd)
+static void show_system_security(struct show *s)
 {
 	int selinux = libreswan_selinux();
-#ifdef FIPS_CHECK
 	bool fips = libreswan_fipsmode();
-#else
-	int fips = FALSE;
-#endif
 
-	whack_comment(whackfd, " ");     /* spacer */
-
-	whack_comment(whackfd, "fips mode=%s;", fips ? "enabled" : "disabled");
-
-	whack_comment(whackfd, "SElinux=%s",
+	show_separator(s);
+	show_comment(s, "fips mode=%s;", fips ? "enabled" : "disabled");
+	show_comment(s, "SElinux=%s",
 		selinux == 0 ? "disabled" : selinux == 1 ? "enabled" : "indeterminate");
 #ifdef HAVE_SECCOMP
-	whack_comment(whackfd, "seccomp=%s",
-		pluto_seccomp_mode == SECCOMP_ENABLED ? "enabled" :
-			pluto_seccomp_mode == SECCOMP_TOLERANT ? "tolerant" : "disabled");
+	show_comment(s, "seccomp=%s",
+		     pluto_seccomp_mode == SECCOMP_ENABLED ? "enabled" :
+		     pluto_seccomp_mode == SECCOMP_TOLERANT ? "tolerant" : "disabled");
 #else
-	whack_comment(whackfd, "seccomp=unsupported");
+	show_comment(s, "seccomp=unsupported");
 #endif
-	whack_comment(whackfd, " ");     /* spacer */
 }
 
-void show_global_status(const struct fd *whackfd)
+void show_global_status(struct show *s)
 {
-	show_globalstate_status(whackfd);
-	show_pluto_stats(whackfd);
+	show_globalstate_status(s);
+	show_pluto_stats(s->whackfd);
 }
 
-void show_status(const struct fd *whackfd)
+void show_status(struct show *s)
 {
-	show_kernel_interface(whackfd);
-	show_ifaces_status(whackfd);
-	whack_comment(whackfd, " ");     /* spacer */
-	show_system_security(whackfd);
-	show_setup_plutomain(whackfd);
-	show_debug_status(whackfd);
-	show_setup_natt(whackfd);
-	show_virtual_private(whackfd);
-	kernel_alg_show_status(whackfd);
-	ike_alg_show_status(whackfd);
-	db_ops_show_status(whackfd);
-	show_connections_status(whackfd);
-	whack_comment(whackfd, " ");     /* spacer */
-	show_brief_status(whackfd);
-	struct show s = {
-		.whackfd = whackfd,
-		.spacer = true,
-	};
-	show_states(&s);
-#if defined(NETKEY_SUPPORT)
-	show_shunt_status(&s);
+	show_kernel_interface(s);
+	show_ifaces_status(s);
+	show_system_security(s);
+	show_setup_plutomain(s);
+	show_debug_status(s);
+	show_setup_natt(s);
+	show_virtual_private(s);
+	show_kernel_alg_status(s);
+	show_ike_alg_status(s);
+	show_db_ops_status(s);
+	show_connections_status(s);
+	show_brief_status(s);
+	show_states(s);
+#if defined(XFRM_SUPPORT)
+	show_shunt_status(s);
 #endif
-	show_spacer(&s); /* if needed, force a trailing blank line */
 }
 
 /*
@@ -178,7 +246,7 @@ static void connection_state(struct state *st, void *data)
 		if (lc->conn->host_pair != st->st_connection->host_pair ||
 		    !same_peer_ids(lc->conn, st->st_connection, NULL))
 			return;
-		/* phase1 is shared with another connnection */
+		/* phase1 is shared with another connection */
 	}
 
 	/* ignore undefined states (i.e. just deleted) */
@@ -235,22 +303,18 @@ void binlog_state(struct state *st, enum state_kind new_state)
 		return;
 
 	if (st == NULL) {
-		DBG(DBG_CONTROLMORE, DBG_log(
-			    "log_state() called without state"));
+		dbg("log_state() called without state");
 		return;
 	}
 
 	struct connection *conn = st->st_connection;
 
 	if (conn == NULL || st->st_connection->name == NULL) {
-		DBG(DBG_CONTROLMORE,
-		    DBG_log("log_state() called without st->st_connection or without st->st_connection->name"));
+		dbg("log_state() called without st->st_connection or without st->st_connection->name");
 		return;
 	}
 
-	DBG(DBG_CONTROLMORE,
-	    DBG_log("log_state called for state update for connection %s ",
-		    conn->name));
+	dbg("log_state called for state update for connection %s ", conn->name);
 
 	struct log_conn_info lc = {
 		.conn = conn,
@@ -272,15 +336,13 @@ void binlog_state(struct state *st, enum state_kind new_state)
 		uint32_t sv = IPsecSAref2NFmark(st->st_ref) | LOG_CONN_STATSVAL(&lc);
 
 		if (conn->statsval == sv) {
-			DBG(DBG_CONTROLMORE,
-			    DBG_log("log_state for connection %s state change signature (%d) matches last one - skip logging",
-				    conn->name, sv));
+			dbg("log_state for connection %s state change signature (%d) matches last one - skip logging",
+			    conn->name, sv);
 			return;
 		}
 		conn->statsval = sv;
-		DBG(DBG_CONTROLMORE,
-			DBG_log("log_state set state change signature for connection %s to %d",
-				conn->name, sv));
+		dbg("log_state set state change signature for connection %s to %d",
+		    conn->name, sv);
 	}
 
 	const char *tun;
@@ -313,9 +375,8 @@ void binlog_state(struct state *st, enum state_kind new_state)
 	case p2_up:	p2 = "up";	break;
 	default:	p2 = "down";	break;
 	}
-	DBG(DBG_CONTROLMORE,
-	    DBG_log("log_state calling %s for connection %s with tunnel(%s) phase1(%s) phase2(%s)",
-		    pluto_stats_binary, conn->name, tun, p1, p2));
+	dbg("log_state calling %s for connection %s with tunnel(%s) phase1(%s) phase2(%s)",
+	    pluto_stats_binary, conn->name, tun, p1, p2);
 
 	/* ??? tun, p1, p2 cannot be NULL -- why handle that case? */
 
@@ -326,7 +387,7 @@ void binlog_state(struct state *st, enum state_kind new_state)
 		 "%s ipsec-tunnel-%s tunnel %s \\; "
 		 "%s ipsec-tunnel-%s phase1 %s \\; "
 		 "%s ipsec-tunnel-%s phase2 %s \\; "
-		 "%s ipsec-tunnel-%s nfmark-me/him 0x%x/0x%x",
+		 "%s ipsec-tunnel-%s nfmark-me/peer 0x%x/0x%x",
 
 		 pluto_stats_binary,
 		 conn->interface ? "push" : "drop", conn->name,
@@ -334,17 +395,16 @@ void binlog_state(struct state *st, enum state_kind new_state)
 		 tun ? "push" : "drop", conn->name, tun ? tun : "",
 		 p1  ? "push" : "drop", conn->name, p1  ? p1  : "",
 		 p2  ? "push" : "drop", conn->name, p2  ? p2  : "",
-		 (st->st_ref || st->st_refhim) ? "push" : "drop", conn->name,
+		 (st->st_ref || st->st_ref_peer) ? "push" : "drop", conn->name,
 		 st->st_ref == IPSEC_SAREF_NA ? IPSEC_SAREF_NA :
 		 st->st_ref == IPSEC_SAREF_NULL ? 0u :
 		 IPsecSAref2NFmark(st->st_ref) | IPSEC_NFMARK_IS_SAREF_BIT
 		 ,
-		 st->st_refhim == IPSEC_SAREF_NA ? IPSEC_SAREF_NA :
-		 st->st_refhim == IPSEC_SAREF_NULL ? 0u :
-		 IPsecSAref2NFmark(st->st_refhim) | IPSEC_NFMARK_IS_SAREF_BIT);
+		 st->st_ref_peer == IPSEC_SAREF_NA ? IPSEC_SAREF_NA :
+		 st->st_ref_peer == IPSEC_SAREF_NULL ? 0u :
+		 IPsecSAref2NFmark(st->st_ref_peer) | IPSEC_NFMARK_IS_SAREF_BIT);
 	if (system(buf) == -1) {
 		loglog(RC_LOG_SERIOUS, "statsbin= failed to send status update notification");
 	}
-	DBG(DBG_CONTROLMORE,
-	    DBG_log("log_state for connection %s completed", conn->name));
+	dbg("log_state for connection %s completed", conn->name);
 }

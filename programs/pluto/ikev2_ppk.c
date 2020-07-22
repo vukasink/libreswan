@@ -61,51 +61,54 @@ bool emit_unified_ppk_id(struct ppk_id_payload *payl, pb_stream *pbs)
 }
 
 /*
- * used by responder, for extracting PPK_ID from IKEv2 Notify
- * PPK_ID Payload, we store PPK_ID and its type in payl
+ * used by responder, for extracting PPK_ID from IKEv2 Notify PPK_ID
+ * Payload, we store PPK_ID and its type in payl
  */
-bool extract_ppk_id(pb_stream *pbs, struct ppk_id_payload *payl)
+bool extract_v2N_ppk_identity(const struct pbs_in *notify_pbs,
+			      struct ppk_id_payload *payl, struct ike_sa *ike)
 {
-	size_t len = pbs_left(pbs);
-	u_char dst[PPK_ID_MAXLEN];
+	struct pbs_in pbs = *notify_pbs;
+	size_t len = pbs_left(&pbs);
 	int idtype;
 
 	if (len > PPK_ID_MAXLEN) {
-		loglog(RC_LOG_SERIOUS, "PPK ID length is too big");
-		return FALSE;
+		log_state(RC_LOG_SERIOUS, &ike->sa, "PPK ID length is too big");
+		return false;
 	}
 	if (len <= 1) {
-		loglog(RC_LOG_SERIOUS, "PPK ID data must be at least 1 byte (received %zd bytes including ppk type byte)",
-			len);
-		return FALSE;
+		log_state(RC_LOG_SERIOUS, &ike->sa, "PPK ID data must be at least 1 byte (received %zd bytes including ppk type byte)",
+			  len);
+		return false;
 	}
 
-	if (!in_raw(dst, len, pbs, "Unified PPK_ID Payload")) {
-		loglog(RC_LOG_SERIOUS, "PPK ID data could not be read");
-		return FALSE;
+	uint8_t dst[PPK_ID_MAXLEN];
+	if (!pbs_in_raw(&pbs, dst, len, "Unified PPK_ID Payload", ike->sa.st_logger)) {
+		log_state(RC_LOG_SERIOUS, &ike->sa, "PPK ID data could not be read");
+		return false;
 	}
 
-	DBG(DBG_CONTROL, DBG_log("received PPK_ID type: %s",
-		enum_name(&ikev2_ppk_id_type_names, dst[0])));
+	dbg("received PPK_ID type: %s", enum_name(&ikev2_ppk_id_type_names, dst[0]));
 
 	idtype = (int)dst[0];
 	switch (idtype) {
 	case PPK_ID_FIXED:
-		DBG(DBG_CONTROL, DBG_log("PPK_ID of type PPK_ID_FIXED."));
+		dbg("PPK_ID of type PPK_ID_FIXED.");
 		break;
 
 	case PPK_ID_OPAQUE:
 	default:
-		loglog(RC_LOG_SERIOUS, "PPK_ID type %d (%s) not supported",
-			idtype, enum_name(&ikev2_ppk_id_type_names, idtype));
-		return FALSE;
+		log_state(RC_LOG_SERIOUS, &ike->sa, "PPK_ID type %d (%s) not supported",
+			  idtype, enum_name(&ikev2_ppk_id_type_names, idtype));
+		return false;
 	}
 
 	/* clone ppk id data without ppk id type byte */
 	payl->ppk_id = clone_bytes_as_chunk(dst + 1, len - 1, "PPK_ID data");
-	DBG(DBG_CONTROL, DBG_dump_hunk("Extracted PPK_ID", payl->ppk_id));
+	if (DBGP(DBG_BASE)) {
+		DBG_dump_hunk("Extracted PPK_ID", payl->ppk_id);
+	}
 
-	return TRUE;
+	return true;
 }
 
 bool ikev2_calc_no_ppk_auth(struct ike_sa *ike,
@@ -124,8 +127,7 @@ bool ikev2_calc_no_ppk_auth(struct ike_sa *ike,
 		if (hash_algo == NULL) {
 			if (c->sighash_policy == LEMPTY) {
 				/* RSA with SHA1 without Digsig: no oid blob appended */
-				if (!ikev2_calculate_rsa_hash(ike, ike->sa.st_original_role,
-							      id_hash, NULL, no_ppk_auth,
+				if (!ikev2_calculate_rsa_hash(ike, id_hash, NULL, no_ppk_auth,
 							      &ike_alg_hash_sha1)) {
 					return false;
 				}
@@ -145,8 +147,7 @@ bool ikev2_calc_no_ppk_auth(struct ike_sa *ike,
 		}
 
 		chunk_t hashval = NULL_HUNK;
-		if (!ikev2_calculate_rsa_hash(ike, ike->sa.st_original_role,
-					      id_hash, NULL, &hashval,
+		if (!ikev2_calculate_rsa_hash(ike, id_hash, NULL, &hashval,
 					      hash_algo)) {
 			return false;
 		}

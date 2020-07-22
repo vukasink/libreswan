@@ -101,9 +101,7 @@ static enum iface_status read_message(const struct iface_port *ifp,
 	 * Create the real message digest; and set up md->packet_pbs
 	 * to describe it.
 	 */
-	struct msg_digest *md = alloc_md("msg_digest in read_packet");
-	md->sender = packet.sender;
-	md->iface = ifp;
+	struct msg_digest *md = alloc_md(ifp, &packet.sender, HERE);
 	init_pbs(&md->packet_pbs,
 		 clone_bytes(packet.ptr, packet.len,
 			     "message buffer in read_packet()"),
@@ -118,7 +116,7 @@ static enum iface_status read_message(const struct iface_port *ifp,
 	    str_endpoint(&ifp->local_endpoint, &lb),
 	    ifp->protocol->name);
 
-	if (DBGP(DBG_RAW)) {
+	if (DBGP(DBG_BASE)) {
 		DBG_dump(NULL, md->packet_pbs.start, pbs_room(&md->packet_pbs));
 	}
 
@@ -152,7 +150,7 @@ void process_packet(struct msg_digest **mdp)
 		 * of any content - not even to look for major version
 		 * number!  So we'll just drop it.
 		 */
-		plog_md(md, "received packet with mangled IKE header - dropped");
+		log_md(RC_LOG, md, "received packet with mangled IKE header - dropped");
 		return;
 	}
 
@@ -160,7 +158,7 @@ void process_packet(struct msg_digest **mdp)
 		/* Some (old?) versions of the Cisco VPN client send an additional
 		 * 16 bytes of zero bytes - Complain but accept it
 		 */
-		if (DBGP(DBG_CONTROL)) {
+		if (DBGP(DBG_BASE)) {
 			DBG_log("size (%u) in received packet is larger than the size specified in ISAKMP HDR (%u) - ignoring extraneous bytes",
 				(unsigned) pbs_room(&md->packet_pbs),
 				md->hdr.isa_length);
@@ -178,7 +176,7 @@ void process_packet(struct msg_digest **mdp)
 		 * IKEv2 doesn't say what to do with low versions,
 		 * just drop them.
 		 */
-		plog_md(md, "ignoring packet with IKE major version '%d'", vmaj);
+		log_md(RC_LOG, md, "ignoring packet with IKE major version '%d'", vmaj);
 		return;
 
 	case ISAKMP_MAJOR_VERSION: /* IKEv1 */
@@ -197,7 +195,7 @@ void process_packet(struct msg_digest **mdp)
 			 * own, given the major version numbers are
 			 * identical.
 			 */
-			plog_md(md, "ignoring packet with IKEv1 minor version number %d greater than %d", vmin, ISAKMP_MINOR_VERSION);
+			log_md(RC_LOG, md, "ignoring packet with IKEv1 minor version number %d greater than %d", vmin, ISAKMP_MINOR_VERSION);
 			send_notification_from_md(md, INVALID_MINOR_VERSION);
 			return;
 		}
@@ -214,7 +212,7 @@ void process_packet(struct msg_digest **mdp)
 			/* Unlike IKEv1, for IKEv2 we are supposed to try to
 			 * continue on unknown minors
 			 */
-			plog_md(md, "Ignoring unknown IKEv2 minor version number %d", vmin);
+			log_md(RC_LOG, md, "Ignoring unknown IKEv2 minor version number %d", vmin);
 		}
 		dbg(" processing version=%u.%u packet with exchange type=%s (%d)",
 		    vmaj, vmin,
@@ -224,7 +222,7 @@ void process_packet(struct msg_digest **mdp)
 		break;
 
 	default:
-		plog_md(md, "message contains unsupported IKE major version '%d'", vmaj);
+		log_md(RC_LOG, md, "message contains unsupported IKE major version '%d'", vmaj);
 		/*
 		 * According to 1.5.  Informational Messages outside
 		 * of an IKE SA, [...] the message is always sent
@@ -345,7 +343,7 @@ static void process_md_clone(struct msg_digest *orig, const char *fmt, ...)
 		va_end(ap);
 		lswlogf(buf, " (%d bytes)", (int)pbs_room(&md->packet_pbs));
 	}
-	if (DBGP(DBG_RAW)) {
+	if (DBGP(DBG_BASE)) {
 		DBG_dump(NULL, md->packet_pbs.start, pbs_room(&md->packet_pbs));
 	}
 
@@ -471,7 +469,7 @@ enum ike_version hdr_ike_version(const struct isakmp_hdr *hdr)
  *   either of the initiator and/or responder values
  *
  * - encourages the coding style where the two cases - REQUEST and
- *   RESPONSE - are clearly labled, that is:
+ *   RESPONSE - are clearly labeled, that is:
  *
  *       switch(role) {
  *       case MESSAGE_REQUEST: ...; break;
@@ -534,14 +532,14 @@ char *cisco_stringify(pb_stream *input_pbs, const char *attr_name)
 			/*
 			 * preserve sanitize_string() behaviour:
 			 *
-			 * exception is that all veritical space just
+			 * exception is that all vertical space just
 			 * becomes white space
 			 */
 			jam(&buf, " ");
 			break;
 		default:
 			/*
-			 * preserve sanitize_string() behavour:
+			 * preserve sanitize_string() behaviour:
 			 *
 			 * XXX: isprint() is wrong as it is affected
 			 * by locale - need portable is printable
@@ -570,8 +568,8 @@ char *cisco_stringify(pb_stream *input_pbs, const char *attr_name)
 void lswlog_msg_digest(struct lswlog *buf, const struct msg_digest *md)
 {
 	enum ike_version ike_version = hdr_ike_version(&md->hdr);
-	lswlog_enum_enum_short(buf, &exchange_type_names, ike_version,
-			       md->hdr.isa_xchg);
+	jam_enum_enum_short(buf, &exchange_type_names, ike_version,
+			    md->hdr.isa_xchg);
 	if (ike_version == IKEv2) {
 		switch (v2_msg_role(md)) {
 		case MESSAGE_REQUEST: lswlogs(buf, " request"); break;
@@ -596,9 +594,9 @@ void lswlog_msg_digest(struct lswlog *buf, const struct msg_digest *md)
 		} else {
 			sep = ",";
 		}
-		lswlog_enum_enum_short(buf, &payload_type_names,
-				       ike_version,
-				       pd->payload_type);
+		jam_enum_enum_short(buf, &payload_type_names,
+				    ike_version,
+				    pd->payload_type);
 	}
-	lswlogs(buf, term);
+	jam_string(buf, term);
 }

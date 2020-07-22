@@ -25,6 +25,7 @@
 
 struct state;   /* forward declaration */
 struct fd;
+struct logger;
 
 struct pluto_event {
 	enum event_type ev_type;        /* Event type if time based */
@@ -37,16 +38,16 @@ struct pluto_event {
 
 extern void event_schedule(enum event_type type, deltatime_t delay,
 			   struct state *st);
-extern void event_schedule_s(enum event_type type, time_t delay_seconds,
-			     struct state *st);
+void event_delete(enum event_type type, struct state *st);
+struct pluto_event **state_event(struct state *st, enum event_type type);
 extern void event_force(enum event_type type, struct state *st);
 extern void delete_event(struct state *st);
 extern void handle_next_timer_event(void);
 extern void init_timer(void);
 
-extern void delete_state_event(struct state *st, struct pluto_event **ev);
-#define delete_liveness_event(ST) delete_state_event((ST), &(ST)->st_liveness_event)
-#define delete_dpd_event(ST) delete_state_event((ST), &(ST)->st_dpd_event)
+void call_state_event_inline(struct logger *logger, struct state *st,
+			     enum event_type type);
+void call_global_event_inline(enum global_timer type, struct fd *whackfd);
 
 extern void timer_list(const struct fd *whackfd);
 extern char *revive_conn;
@@ -55,15 +56,19 @@ extern char *revive_conn;
  * Since global timers (one-shot or periodic) rely on global state
  * they don't need a context parameter.
  *
+ * Global timers do not have a whackfd, however global timers can be
+ * triggered manually using whack (well that's the theory, needs some
+ * code).  Hence the parameter.
+ *
  * XXX: implementation can be found in server.c and not timer.c as it
  * is just easier.
  */
-typedef void (global_timer_cb)(void);
-void enable_periodic_timer(enum event_type type, global_timer_cb *cb,
+typedef void (global_timer_cb)(struct fd *whackfd);
+void enable_periodic_timer(enum global_timer type, global_timer_cb *cb,
 			   deltatime_t period);
 
-void init_oneshot_timer(enum event_type type, global_timer_cb *cb);
-void schedule_oneshot_timer(enum event_type type, deltatime_t delay);
-void deschedule_oneshot_timer(enum event_type type);
+void init_oneshot_timer(enum global_timer type, global_timer_cb *cb);
+void schedule_oneshot_timer(enum global_timer type, deltatime_t delay);
+void deschedule_oneshot_timer(enum global_timer type);
 
 #endif /* _TIMER_H */

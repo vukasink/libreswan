@@ -56,10 +56,11 @@ BuildRequires: libevent2-devel
 BuildRequires: libselinux-devel
 BuildRequires: nspr-devel
 BuildRequires: nss-devel >= %{nss_version}
+BuildRequires: nss-tools
 BuildRequires: openldap-devel
 BuildRequires: pam-devel
 BuildRequires: pkgconfig
-BuildRequires: pkgconfig net-tools
+BuildRequires: net-tools
 BuildRequires: redhat-rpm-config
 BuildRequires: xmlto
 %if 0%{with_efence}
@@ -115,7 +116,7 @@ make %{?_smp_mflags} \
 %if 0%{with_efence}
     USE_EFENCE=true \
 %endif
-    WERROR_CFLAGS="-Werror -Wno-missing-field-initializers" \
+    WERROR_CFLAGS="-Werror -Wno-missing-field-initializers -Wno-error=address" \
     USERLINK="%{?__global_ldflags}" \
     %{libreswan_config} \
     programs

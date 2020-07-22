@@ -1,0 +1,69 @@
+/testing/guestbin/swan-prep
+west #
+ pk12util -W foobar -K '' -d sql:/etc/ipsec.d -i /testing/x509/selfsigned/west-selfsigned.p12
+pk12util: no nickname for cert in PKCS12 file.
+pk12util: using nickname: west-selfsigned.testing.libreswan.org
+pk12util: PKCS12 IMPORT SUCCESSFUL
+west #
+ pk12util -W foobar -K '' -d sql:/etc/ipsec.d -i /testing/x509/selfsigned/east-selfsigned.p12
+pk12util: no nickname for cert in PKCS12 file.
+pk12util: using nickname: east-selfsigned.testing.libreswan.org
+pk12util: PKCS12 IMPORT SUCCESSFUL
+west #
+ pk12util -W foobar -K '' -d sql:/etc/ipsec.d -i /testing/x509/selfsigned/road-selfsigned.p12
+pk12util: no nickname for cert in PKCS12 file.
+pk12util: using nickname: road-selfsigned.testing.libreswan.org
+pk12util: PKCS12 IMPORT SUCCESSFUL
+west #
+ ipsec start
+Redirecting to: [initsystem]
+west #
+ /testing/pluto/bin/wait-until-pluto-started
+west #
+ ipsec auto --add west-x509
+002 added connection description "west-x509"
+west #
+ ipsec auto --add road-x509
+002 added connection description "road-x509"
+west #
+ echo "initdone"
+initdone
+west #
+ ipsec auto --up west-x509
+002 "west-x509" #1: initiating Main Mode
+1v1 "west-x509" #1: STATE_MAIN_I1: sent MI1, expecting MR1
+1v1 "west-x509" #1: STATE_MAIN_I2: sent MI2, expecting MR2
+002 "west-x509" #1: I am sending my cert
+002 "west-x509" #1: I am sending a certificate request
+1v1 "west-x509" #1: STATE_MAIN_I3: sent MI3, expecting MR3
+002 "west-x509" #1: Peer ID is ID_DER_ASN1_DN: 'CN=east-selfsigned.testing.libreswan.org'
+003 "west-x509" #1: authenticated using RSA with SHA-1
+004 "west-x509" #1: STATE_MAIN_I4: ISAKMP SA established {auth=RSA_SIG cipher=AES_CBC_256 integ=HMAC_SHA2_256 group=MODP2048}
+002 "west-x509" #2: initiating Quick Mode RSASIG+ENCRYPT+TUNNEL+PFS+UP+IKEV1_ALLOW+IKE_FRAG_ALLOW+ESN_NO
+1v1 "west-x509" #2: STATE_QUICK_I1: sent QI1, expecting QR1
+004 "west-x509" #2: STATE_QUICK_I2: sent QI2, IPsec SA established tunnel mode {ESP=>0xESPESP <0xESPESP xfrm=AES_CBC_128-HMAC_SHA1_96 NATOA=none NATD=none DPD=passive}
+west #
+ ipsec whack --impair delete-on-retransmit
+west #
+ # this one should fail, as east is only expecting selfsigned cert of west, not road
+west #
+ ipsec auto --up road-x509
+002 "road-x509" #3: initiating Main Mode
+1v1 "road-x509" #3: STATE_MAIN_I1: sent MI1, expecting MR1
+1v1 "road-x509" #3: STATE_MAIN_I2: sent MI2, expecting MR2
+002 "road-x509" #3: I am sending my cert
+002 "road-x509" #3: I am sending a certificate request
+1v1 "road-x509" #3: STATE_MAIN_I3: sent MI3, expecting MR3
+003 "road-x509" #3: ignoring informational payload INVALID_ID_INFORMATION, msgid=00000000, length=12
+003 "road-x509" #3: received and ignored notification payload: INVALID_ID_INFORMATION
+002 "road-x509" #3: IMPAIR: retransmit so deleting SA
+002 "road-x509" #3: deleting state (STATE_MAIN_I3) and NOT sending notification
+002 "road-x509" #3: deleting IKE SA but connection is supposed to remain up; schedule EVENT_REVIVE_CONNS
+west #
+ echo "done"
+done
+west #
+ ../bin/check-for-core.sh
+west #
+ if [ -f /sbin/ausearch ]; then ausearch -r -m avc -ts recent ; fi
+

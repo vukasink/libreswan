@@ -27,7 +27,7 @@
 #include "lset.h"
 #include "lswcdefs.h"
 #include "jambuf.h"
-#include "libreswan/passert.h"
+#include "passert.h"
 #include "constants.h"		/* for DBG_... */
 #include "where.h"		/* used by macros */
 #include "fd.h"			/* for null_fd */
@@ -187,7 +187,60 @@ enum stream {
 	NO_STREAM	= 0xf00000,	/* n/a */
 };
 
-void log_jambuf(lset_t rc_flags, const struct fd *object_fd, jambuf_t *buf);
+/*
+ * Broadcast a log message.
+ *
+ * By default send it to the log file and any attached whacks (both
+ * globally and the object).
+ *
+ * If any *_STREAM flag is specified then only send the message to
+ * that stream.
+ *
+ * log_message() is a catch-all for code that may or may not have ST.
+ * For instance a responder decoding a message may not yet have
+ * created the state.  It will will use ST, MD, or nothing as the
+ * prefix, and logs to ST's whackfd when possible.
+ */
+
+struct logger_object_vec {
+	const char *name;
+	bool free_object;
+	size_t (*jam_object_prefix)(jambuf_t *buf, const void *object);
+#define jam_logger_prefix(BUF, LOGGER) (LOGGER)->object_vec->jam_object_prefix(BUF, (LOGGER)->object)
+	/*
+	 * When opportunistic encryption or the initial responder, for
+	 * instance, some logging is suppressed.
+	 */
+	bool (*suppress_object_log)(const void *object);
+#define suppress_log(LOGGER) (LOGGER)->object_vec->suppress_object_log((LOGGER)->object)
+};
+
+struct logger {
+	struct fd *global_whackfd;
+	struct fd *object_whackfd;
+	const void *object;
+	const struct logger_object_vec *object_vec;
+	where_t where;
+	/* used by timing to nest its logging output */
+	int timing_level;
+};
+
+void log_message(lset_t rc_flags,
+		 const struct logger *log,
+		 const char *format, ...) PRINTF_LIKE(3);
+
+void log_va_list(lset_t rc_flags, const struct logger *logger,
+		 const char *message, va_list ap);
+
+void jambuf_to_logger(jambuf_t *buf, const struct logger *logger, lset_t rc_flags);
+
+#define LOG_MESSAGE(RC_FLAGS, LOGGER, BUF)				\
+	LSWLOG_(true, BUF,						\
+		jam_logger_prefix(BUF, LOGGER),				\
+		jambuf_to_logger(BUF, (LOGGER), RC_FLAGS))
+
+
+void log_jambuf(lset_t rc_flags, struct fd *object_fd, jambuf_t *buf);
 
 size_t lswlog_to_file_stream(struct lswlog *buf, FILE *file);
 
@@ -215,36 +268,19 @@ void lswlog_to_error_stream(struct lswlog *buf);
  * double log!  Hence LSWLOG_RC().
  */
 
-void lswlog_log_prefix(struct lswlog *buf);
+void jam_cur_prefix(struct lswlog *buf);
 
-extern void libreswan_log_rc(enum rc_type, const char *fmt, ...) PRINTF_LIKE(2);
-#define loglog	libreswan_log_rc
+extern void loglog(enum rc_type, const char *fmt, ...) PRINTF_LIKE(2); /* use log_message() */
 
 #define LSWLOG_RC(RC, BUF)						\
 	LSWLOG_(true, BUF,						\
-		lswlog_log_prefix(BUF),					\
+		jam_cur_prefix(BUF),					\
 		lswlog_to_default_streams(BUF, RC))
 
 /* signature needs to match printf() */
 extern int libreswan_log(const char *fmt, ...) PRINTF_LIKE(1);
 
 #define LSWLOG(BUF) LSWLOG_RC(RC_LOG, BUF)
-
-/*
- * Log, at level RC, to the whack log (if attached).
- *
- * XXX: See programs/pluto/log.h for interface; should only be used in
- * pluto.  This code assumes that it is being called from the main
- * thread.
- *
- * LSWLOG_INFO() sends stuff just to "whack" (or for a tool STDERR?).
- * XXX: there is no prefix, bug?  Should it send stuff out with level
- * RC_COMMENT?
- */
-
-/* XXX: should be stdout?!? */
-#define LSWLOG_INFO(BUF)						\
-	LSWLOG_(true, BUF, , log_jambuf(WHACK_STREAM|RC_PRINT, null_fd, buf))
 
 /*
  * Wrap <message> in a prefix and suffix where the suffix contains
@@ -265,6 +301,14 @@ extern int libreswan_log(const char *fmt, ...) PRINTF_LIKE(1);
 void libreswan_exit(enum pluto_exit_code rc) NEVER_RETURNS;
 void libreswan_log_errno(int e, const char *message, ...) PRINTF_LIKE(2);
 void libreswan_exit_log_errno(int e, const char *message, ...) PRINTF_LIKE(2) NEVER_RETURNS;
+
+#define log_errno(LOGGER, ERRNO, FMT, ...)				\
+	{								\
+		int errno_ = ERRNO; /* save value across va args */	\
+		log_message(ERROR_STREAM|RC_LOG_SERIOUS, LOGGER,	\
+			    "ERROR: "FMT" "PRI_ERRNO,			\
+			    ##__VA_ARGS__, pri_errno(errno_));		\
+	}
 
 #define LOG_ERRNO(ERRNO, ...) {						\
 		int log_errno = ERRNO; /* save value across va args */	\
@@ -326,27 +370,6 @@ void DBG_dump(const char *label, const void *p, size_t len);
 
 #define LSWDBGP(DEBUG, BUF) LSWDBG_(DBGP(DEBUG), BUF)
 #define LSWLOG_DEBUG(BUF) LSWDBG_(true, BUF)
-
-/*
- * Routines for accumulating output in the lswlog buffer.
- *
- * If there is insufficient space, the output is truncated and "..."
- * is appended.
- *
- * Similar to C99 snprintf() et.al., these functions return the
- * untruncated size of output that the call would append (the value
- * can never be negative).
- *
- * While probably not directly useful, it provides a sink for code
- * that needs to consume an otherwise ignored return value (the
- * compiler attribute warn_unused_result can't be suppressed using a
- * (void) cast).
- */
-
-size_t lswlogvf(struct lswlog *log, const char *format, va_list ap);
-size_t lswlogf(struct lswlog *log, const char *format, ...) PRINTF_LIKE(2);
-size_t lswlogs(struct lswlog *log, const char *string);
-size_t lswlogl(struct lswlog *log, struct lswlog *buf);
 
 /*
  * Code wrappers that cover up the details of allocating,
@@ -542,7 +565,7 @@ void lswlog_errno_suffix(struct lswlog *buf, int e);
 
 #define LSWLOG_ERROR(BUF)			\
 	LSWLOG_(true, BUF,			\
-		lswlog_log_prefix(BUF),		\
+		jam_cur_prefix(BUF),		\
 		lswlog_to_error_stream(buf))
 
 #endif /* _LSWLOG_H_ */

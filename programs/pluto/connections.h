@@ -10,7 +10,7 @@
  * Copyright (C) 2013 Kim Heino <b@bbbs.net>
  * Copyright (C) 2013 Antony Antony <antony@phenome.org>
  * Copyright (C) 2013 Tuomo Soini <tis@foobar.fi>
- * Copyright (C) 2013-2019 Paul Wouters <pwouters@redhat.com>
+ * Copyright (C) 2013-2020 Paul Wouters <pwouters@redhat.com>
  * Copyright (C) 2013 Matt Rogers <mrogers@redhat.com>
  * Copyright (C) 2019 Andrew Cagney <cagney@gnu.org>
  * Copyright (C) 2017 Mayank Totale <mtotale@gmail.com>
@@ -32,6 +32,8 @@
 
 #include "fd.h"
 #include "proposals.h"
+#include "connection_db.h"		/* for co_serial_t */
+#include "hash_table.h"
 
 /* There are two kinds of connections:
  * - ISAKMP connections, between hosts (for IKE communication)
@@ -151,12 +153,16 @@ extern void fmt_policy_prio(policy_prio_t pp, char buf[POLICY_PRIO_BUF]);
 #include "err.h"
 #include "state.h"
 #include "ip_endpoint.h"
+#include "ip_selector.h"
+#include "ip_protoport.h"
+#include "whack.h"
 
 struct virtual_t;	/* opaque type */
 
 struct host_pair;	/* opaque type */
 
 struct end {
+	const char *leftright;
 	struct id id;
 
 	enum keyword_host host_type;
@@ -166,17 +172,33 @@ struct end {
 		host_nexthop,
 		host_srcip;
 	ip_subnet
-		client,
 		host_vtiip,
 		ifaceip;
 
+	ip_selector client;
+
+	/* original information from whack */
+	struct {
+		struct {
+			ip_subnet subnet;
+			ip_protoport protoport;
+		} client;
+		struct {
+			unsigned ikeport;
+		} host;
+	} raw;
+
 	bool key_from_DNS_on_demand;
 	bool has_client;
-	bool has_client_wildcard;
-	bool has_port_wildcard;
 	bool has_id_wildcards;
 	char *updown;
 	uint16_t host_port;		/* where the IKE port is */
+	/*
+	 * Was the PORT, in the PROTOPORT included in the whack
+	 * message "wild"?  Can't use .port as that will have been
+	 * scribbled on by a negotiation :-(
+	 */
+	bool has_port_wildcard;
 	uint16_t port;			/* port number, if per-port keying */
 	uint8_t protocol;		/* transport-protocol number, if per-X keying */
 
@@ -250,6 +272,8 @@ struct ephemeral_variables {
 };
 
 struct connection {
+	co_serial_t serialno;
+	co_serial_t serial_from;
 	char *name;
 	enum ike_version ike_version;
 	char *foodgroup;
@@ -389,13 +413,16 @@ struct connection {
 
 	char *redirect_to;        /* RFC 5685 */
 	char *accept_redirect_to;
+
+	struct list_entry serialno_list_entry;
+	struct list_entry hash_table_entries[CONNECTION_HASH_TABLES_ROOF];
 };
 
 #define oriented(c) ((c).interface != NULL)
 extern bool orient(struct connection *c);
 
 extern bool same_peer_ids(const struct connection *c,
-			  const struct connection *d, const struct id *his_id);
+			  const struct connection *d, const struct id *peers_id);
 
 /* Format the topology of a connection end, leaving out defaults.
  * Largest left end looks like: client === host : port [ host_id ] --- hop
@@ -407,7 +434,7 @@ extern size_t format_end(char *buf, size_t buf_len,
 			 bool is_left, lset_t policy, bool filter_rnh);
 
 struct whack_message;   /* forward declaration of tag whack_msg */
-extern void add_connection(const struct fd *whackfd, const struct whack_message *wm);
+extern void add_connection(struct fd *whackfd, const struct whack_message *wm);
 extern void restart_connections_by_peer(struct connection *c);
 extern void flush_revival(const struct connection *c);
 
@@ -421,13 +448,14 @@ extern void initiate_ondemand(const ip_address *our_client,
 			      struct xfrm_user_sec_ctx_ike *uctx,
 			      const char *why);
 
-extern void terminate_connection(const char *name, bool quiet);
-extern void release_connection(struct connection *c, bool relations);
+extern void terminate_connection(const char *name, bool quiet,
+				 struct fd *whack);
+extern void release_connection(struct connection *c, bool relations, struct fd *whackfd);
 extern void delete_connection(struct connection *c, bool relations);
-extern void suppress_delete(struct connection *c);
-extern void delete_connections_by_name(const char *name, bool strict);
+extern void delete_connections_by_name(const char *name, bool strict,
+				       struct fd *whack);
 extern void delete_every_connection(void);
-extern char *add_group_instance(const struct fd *whack,
+extern char *add_group_instance(struct fd *whack,
 				struct connection *group,
 				const ip_subnet *target,
 				uint8_t proto,
@@ -443,8 +471,9 @@ extern struct connection *route_owner(struct connection *c,
 				      struct spd_route **esrp);
 
 extern struct connection *shunt_owner(const ip_subnet *ours,
-				      const ip_subnet *his);
-extern void rekey_now(const char *name, enum sa_type sa_type);
+				      const ip_subnet *peers);
+extern void rekey_now(const char *name, enum sa_type sa_type, struct fd *whackfd,
+		      bool background);
 
 #define remote_id_was_instantiated(c) \
 	( (c)->kind == CK_INSTANCE && \
@@ -477,33 +506,33 @@ extern struct connection
 struct alg_info;        /* forward declaration of tag (defined in alg_info.h) */
 
 extern struct connection *rw_instantiate(struct connection *c,
-					 const ip_address *him,
-					 const ip_subnet *his_net,
-					 const struct id *his_id);
+					 const ip_address *peer_addr,
+					 const ip_subnet *peer_subnet,
+					 const struct id *peer_id);
 struct connection *oppo_instantiate(struct connection *c,
-				    const ip_address *him,
-				    const struct id *his_id,
+				    const ip_address *peer_addr,
+				    const struct id *peer_id,
 				    const ip_address *our_client,
 				    const ip_address *peer_client);
 extern struct connection *instantiate(struct connection *c,
-				      const ip_address *him,
-				      const struct id *his_id);
+				      const ip_address *peer_addr,
+				      const struct id *peer_id);
 
 extern struct connection *build_outgoing_opportunistic_connection(
 		const ip_address *our_client,
 		const ip_address *peer_client,
 		const int transport_proto);
 
-/* worst case: "[" serial "] " myclient "=== ..." peer "===" hisclient '\0' <cookie> */
+/* worst case: "[" serial "] " myclient "=== ..." peer "===" peer_client '\0' <cookie> */
 #define CONN_INST_BUF \
 	(2 + 10 + 1 + SUBNETTOT_BUF + 7 + ADDRTOT_BUF + 3 + SUBNETTOT_BUF + 1 + 1)
 
 extern char *fmt_conn_instance(const struct connection *c,
 			       char buf[CONN_INST_BUF]);
 
-/* publically useful? */
-void jam_connection_instance(struct lswlog *buf, const struct connection *c);
-void jam_connection(struct lswlog *buf, const struct connection *c);
+/* publicly useful? */
+size_t jam_connection_instance(struct lswlog *buf, const struct connection *c);
+size_t jam_connection(struct lswlog *buf, const struct connection *c);
 
 /*
  * XXX: Instead of str_connection(), which would require a buffer big
@@ -545,19 +574,20 @@ extern struct connection *eclipsed(const struct connection *c, struct spd_route 
 
 /* print connection status */
 
-extern void show_one_connection(const struct fd *whackfd,
+extern void show_one_connection(struct show *s,
 				const struct connection *c);
-extern void show_connections_status(const struct fd *whackfd);
+extern void show_connections_status(struct show *s);
 extern int connection_compare(const struct connection *ca,
 			      const struct connection *cb);
 
-void connection_check_ddns(void);
-
-void connection_check_phase2(void);
+void connection_check_ddns(struct fd *whackfd);
+void connection_check_phase2(struct fd *whackfd);
 void init_connections(void);
 
 extern int foreach_connection_by_alias(const char *alias,
+				       struct fd *whackfd,
 				       int (*f)(struct connection *c,
+						struct fd *whackfd,
 						void *arg),
 				       void *arg);
 
@@ -570,5 +600,11 @@ extern void liveness_action(struct connection *c, enum ike_version ike_version);
 extern uint32_t calculate_sa_prio(const struct connection *c, bool oe_shunt);
 
 so_serial_t get_newer_sa_from_connection(struct state *st);
+
+extern bool load_end_cert_and_preload_secret(struct fd *whackfd,
+					     const char *which, const char *pubkey,
+					     enum whack_pubkey_type pubkey_type,
+					     struct end *dst_end);
+extern void reread_cert_connections(struct fd *whackfd);
 
 #endif

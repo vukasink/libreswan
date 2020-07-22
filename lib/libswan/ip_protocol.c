@@ -13,18 +13,20 @@
  * for more details.
  */
 
-#include "ip_protocol.h"
-#include "ietf_constants.h"
+#include <netinet/in.h>		/* for IPPROTO_* */
+
 #include "lswcdefs.h"		/* for elemsof() */
 #include "constants.h"		/* for strncaseeq() */
+#include "enum_names.h"
 
-#include "libreswan/pfkeyv2.h"
+#include "ip_protocol.h"
+#include "ip_encap.h"
 
 const struct ip_protocol ip_protocol_unset = {
 	.prefix = "unk",
 	.description = "unknown",
 	.name = "UNKNOWN",
-	.ipproto = IPPROTO_NONE,
+	.ipproto = 0,
 };
 
 const struct ip_protocol ip_protocol_icmp = {
@@ -46,6 +48,7 @@ const struct ip_protocol ip_protocol_tcp = {
 	.prefix = "tcp",
 	.name = "TCP",
 	.ipproto = IPPROTO_TCP,
+	.encap_esp = &ip_encap_esp_in_tcp,
 };
 
 const struct ip_protocol ip_protocol_udp = {
@@ -53,6 +56,7 @@ const struct ip_protocol ip_protocol_udp = {
 	.prefix = "udp",
 	.name = "UDP",
 	.ipproto = IPPROTO_UDP,
+	.encap_esp = &ip_encap_esp_in_udp,
 };
 
 const struct ip_protocol ip_protocol_esp = {
@@ -118,7 +122,7 @@ const struct ip_protocol *protocol_by_ipproto(unsigned ipproto)
 {
 	/* perhaps a little sparse */
 	static const struct ip_protocol *ip_protocols[] = {
-		[IPPROTO_NONE] = &ip_protocol_unset,
+		[0] = &ip_protocol_unset,
 		[IPPROTO_ICMP] = &ip_protocol_icmp,
 		[IPPROTO_IPIP] = &ip_protocol_ipip,
 		[IPPROTO_TCP] = &ip_protocol_tcp,
@@ -140,3 +144,19 @@ const struct ip_protocol *protocol_by_ipproto(unsigned ipproto)
 		return NULL;
 	}
 }
+
+static const char *const ip_protocol_id_name[] = {
+	[0] = "ALL",
+#define A(P) [IPPROTO_##P] = #P
+	A(UDP),
+	A(TCP),
+	A(ICMP),
+#undef A
+};
+
+enum_names ip_protocol_id_names = {
+	0, elemsof(ip_protocol_id_name) - 1,
+	ARRAY_REF(ip_protocol_id_name),
+	NULL, /* prefix */
+	NULL, /* next */
+};

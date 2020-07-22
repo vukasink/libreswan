@@ -42,21 +42,41 @@ static const uint8_t rsa_sha1_der_header[] = {
 };
 
 struct crypt_mac v2_calculate_sighash(const struct ike_sa *ike,
-				      enum original_role role,
 				      const struct crypt_mac *idhash,
-				      const chunk_t firstpacket,
-				      const struct hash_desc *hasher)
+				      const struct hash_desc *hasher,
+				      enum perspective from_the_perspective_of)
 {
+	enum sa_role role;
+	chunk_t firstpacket;
+	switch (from_the_perspective_of) {
+	case LOCAL_PERSPECTIVE:
+		firstpacket = ike->sa.st_firstpacket_me;
+		role = ike->sa.st_sa_role;
+		break;
+	case REMOTE_PERSPECTIVE:
+		firstpacket = ike->sa.st_firstpacket_peer;
+		role = (ike->sa.st_sa_role == SA_INITIATOR ? SA_RESPONDER :
+			ike->sa.st_sa_role == SA_RESPONDER ? SA_INITIATOR :
+			0);
+		break;
+	default: bad_case(from_the_perspective_of);
+	}
+
 	const chunk_t *nonce;
 	const char *nonce_name;
-
-	if (role == ORIGINAL_INITIATOR) {
+	switch (role) {
+	case SA_INITIATOR:
 		/* on initiator, we need to hash responders nonce */
 		nonce = &ike->sa.st_nr;
 		nonce_name = "inputs to hash2 (responder nonce)";
-	} else {
+		break;
+	case SA_RESPONDER:
+		/* on responder, we need to hash initiators nonce */
 		nonce = &ike->sa.st_ni;
 		nonce_name = "inputs to hash2 (initiator nonce)";
+		break;
+	default:
+		bad_case(from_the_perspective_of);
 	}
 
 	if (DBGP(DBG_CRYPT)) {
@@ -246,7 +266,8 @@ struct hash_signature v2_auth_signature(struct logger *logger,
 	struct hash_signature sig = pks->pubkey_type->sign_hash(pks,
 								hash_octets,
 								hash_len,
-								hash_algo);
+								hash_algo,
+								logger);
 	logtime_stop(&sign_time, "%s() calling sign_hash()", __func__);
 	passert(sig.len <= sizeof(sig.ptr/*array*/));
 	logtime_stop(&start, "%s()", __func__);

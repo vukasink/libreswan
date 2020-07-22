@@ -59,7 +59,8 @@
 #include "pluto_crypt.h"
 #include "enum_names.h"
 #include "virtual.h"	/* needs connections.h */
-#include "state_db.h"	/* for init_state_db() */
+#include "state_db.h"		/* for init_state_db() */
+#include "connection_db.h"	/* for connection_state_db() */
 #include "nat_traversal.h"
 #include "ike_alg.h"
 #include "ikev2_redirect.h"
@@ -86,6 +87,10 @@
 
 #ifdef USE_DNSSEC
 #include "dnssec.h"
+#endif
+
+#ifdef HAVE_SECCOMP
+#include "pluto_seccomp.h"
 #endif
 
 static const char *pluto_name;	/* name (path) we were invoked with */
@@ -136,12 +141,12 @@ static void free_pluto_main(void)
 	pfreeany(ocsp_uri);
 	pfreeany(ocsp_trust_name);
 	pfreeany(peerlog_basedir);
-	pfreeany(global_redirect_to);
 	pfreeany(curl_iface);
 	pfreeany(pluto_log_file);
 	pfreeany(pluto_dnssec_rootfile);
 	pfreeany(pluto_dnssec_trusted);
 	pfreeany(rundir);
+	free_global_redirect_dests();
 }
 
 /*
@@ -162,7 +167,7 @@ static void invocation_fail(err_t mess)
 
 /* string naming compile-time options that have interop implications */
 static const char compile_time_interop_options[] = ""
-#ifdef NETKEY_SUPPORT
+#ifdef XFRM_SUPPORT
 	" XFRM(netkey)"
 #endif
 #ifdef USE_XFRM_INTERFACE
@@ -194,7 +199,7 @@ static const char compile_time_interop_options[] = ""
 #ifdef NSS_IPSEC_PROFILE
 	" (IPsec profile)"
 #endif
-#ifdef USE_NSS_PRF
+#ifdef USE_NSS_KDF
         " (NSS-PRF)"
 #else
         " (native-PRF)"
@@ -206,7 +211,7 @@ static const char compile_time_interop_options[] = ""
 	" SYSTEMD_WATCHDOG"
 #endif
 #ifdef FIPS_CHECK
-	" FIPS_CHECK"
+	" FIPS_BINCHECK"
 #endif
 #ifdef HAVE_LABELED_IPSEC
 	" LABELED_IPSEC"
@@ -391,8 +396,8 @@ static void get_bsi_random(size_t nbytes, unsigned char *buf)
 	}
 
 	ndone = 0;
-		DBG(DBG_CONTROL, DBG_log("need %d bits random for extra seeding of the NSS PRNG",
-			(int) nbytes * BITS_PER_BYTE));
+	dbg("need %d bits random for extra seeding of the NSS PRNG",
+	    (int) nbytes * BITS_PER_BYTE);
 
 	while (ndone < nbytes) {
 		got = read(dev, buf + ndone, nbytes - ndone);
@@ -408,11 +413,10 @@ static void get_bsi_random(size_t nbytes, unsigned char *buf)
 		ndone += got;
 	}
 	close(dev);
-	DBG(DBG_CONTROL, DBG_log("read %zu bytes from /dev/random for NSS PRNG",
-		nbytes));
+	dbg("read %zu bytes from /dev/random for NSS PRNG", nbytes);
 }
 
-static bool pluto_init_nss(char *nssdir)
+static void pluto_init_nss(char *nssdir)
 {
 	SECStatus rv;
 
@@ -422,10 +426,9 @@ static bool pluto_init_nss(char *nssdir)
 	lsw_nss_buf_t err;
 	if (!lsw_nss_setup(nssdir, LSW_NSS_READONLY, lsw_nss_get_password, err)) {
 		loglog(RC_LOG_SERIOUS, "%s", err);
-		return FALSE;
+		loglog(RC_LOG_SERIOUS, "FATAL: NSS initialization failure");
+		exit_pluto(PLUTO_EXIT_NSS_FAIL);
 	}
-
-	libreswan_log("NSS initialized");
 
 	/*
 	 * This exists purely to make the BSI happy.
@@ -442,8 +445,7 @@ static bool pluto_init_nss(char *nssdir)
 		messupn(buf, seedbytes);
 		pfree(buf);
 	}
-
-	return TRUE;
+	libreswan_log("NSS crypto library initialized");
 }
 
 /* 0 is special and default: do not check crls dynamically */
@@ -712,7 +714,7 @@ int main(int argc, char **argv)
 	 * We read the intentions for how to log from command line options
 	 * and the config file. Then we prepare to be able to log, but until
 	 * then log to stderr (better then nothing). Once we are ready to
-	 * actually do loggin according to the methods desired, we set the
+	 * actually do logging according to the methods desired, we set the
 	 * variables for those methods
 	 */
 	bool log_to_stderr_desired = FALSE;
@@ -942,15 +944,11 @@ int main(int argc, char **argv)
 			continue;
 
 		case 'K':	/* --use-netkey */
-#ifdef NETKEY_SUPPORT
+#ifdef XFRM_SUPPORT
 			kernel_ops = &netkey_kernel_ops;
 #else
 			libreswan_log("--use-netkey not supported");
 #endif
-			continue;
-
-		case 'n':	/* --use-nostack */
-			kernel_ops = &nokernel_kernel_ops;
 			continue;
 
 		case 'D':	/* --force-busy */
@@ -1186,12 +1184,10 @@ int main(int argc, char **argv)
 			if (ugh != NULL) {
 				break;
 			} else {
-				pfreeany(global_redirect_to);
-				global_redirect_to =
-					clone_str(optarg, "global_redirect_to");
+				set_global_redirect_dests(optarg);
 				libreswan_log(
 					"all IKE_SA_INIT requests will from now on be redirected to: %s\n",
-					 global_redirect_to);
+					 optarg);
 			}
 		}
 			continue;
@@ -1406,8 +1402,7 @@ int main(int argc, char **argv)
 			set_cfg_string(&virtual_private,
 				cfg->setup.strings[KSF_VIRTUALPRIVATE]);
 
-			set_cfg_string(&global_redirect_to,
-				cfg->setup.strings[KSF_GLOBAL_REDIRECT_TO]);
+			set_global_redirect_dests(cfg->setup.strings[KSF_GLOBAL_REDIRECT_TO]);
 
 			nhelpers = cfg->setup.options[KBF_NHELPERS];
 			secctx_attr_type = cfg->setup.options[KBF_SECCTX];
@@ -1417,25 +1412,26 @@ int main(int argc, char **argv)
 			passert(kernel_ops != NULL);
 
 			if (!(protostack == NULL || *protostack == '\0')) {
-				if (streq(protostack, "none")) {
-					kernel_ops = &nokernel_kernel_ops;
-				} else if (streq(protostack, "auto")) {
+				if (streq(protostack, "auto")) {
 					libreswan_log("the option protostack=auto is obsoleted, falling back to protostack=%s",
 						kernel_ops->kern_name);
-#ifdef NETKEY_SUPPORT
+				} else if (streq(protostack, "native")) {
+					libreswan_log("the option protostack=native is obsoleted, falling back to protostack=%s",
+						      kernel_ops->kern_name);
+#ifdef XFRM_SUPPORT
 				} else if (streq(protostack, "netkey") ||
-					streq(protostack, "native")) {
-						kernel_ops = &netkey_kernel_ops;
+					   streq(protostack, "native")) {
+					kernel_ops = &netkey_kernel_ops;
 #endif
 #ifdef BSD_KAME
 				} else if (streq(protostack, "bsd") ||
-					streq(protostack, "kame") ||
-					streq(protostack, "bsdkame")) {
-						kernel_ops = &bsdkame_kernel_ops;
+					   streq(protostack, "kame") ||
+					   streq(protostack, "bsdkame")) {
+					kernel_ops = &bsdkame_kernel_ops;
 #endif
 				} else {
 					libreswan_log("protostack=%s ignored, using default protostack=%s",
-						protostack, kernel_ops->kern_name);
+						      protostack, kernel_ops->kern_name);
 				}
 			}
 
@@ -1473,8 +1469,44 @@ int main(int argc, char **argv)
 		case OPT_IMPAIR:
 		{
 			struct whack_impair impairment;
-			if (parse_impair(optarg, &impairment, true)) {
-				process_impair(&impairment);
+			/*
+			 * XXX: logging here is weird:
+			 *
+			 * parse_impair() directly calls fprintf() and
+			 * STDOUT / STDERR.  This seems reasonable
+			 * since the output is intended for the
+			 * command line user (and the process hasn't
+			 * deteached and logging has yet to be
+			 * redirected).
+			 *
+			 * process_impair() tries to use the global
+			 * logger but that result in a strange date
+			 * prefix.  The 'logger' could be pointed at
+			 * STDOUT / STDERR; however suspect the
+			 * problem is in the code emitting the log
+			 * record.  Since logging isn't re-directed it
+			 * should be producing command-line user
+			 * friendly output.
+			 */
+			switch (parse_impair(optarg, &impairment, true, pluto_name)) {
+			case IMPAIR_OK:
+			{
+				/* see note above */
+				struct logger global_logger = GLOBAL_LOGGER(null_fd);
+				if (!process_impair(&impairment, NULL, true, null_fd,
+						    &global_logger)) {
+					fprintf(stderr, "%s: impair option '%s' is not valid from the command line\n",
+						pluto_name, optarg);
+					exit(1);
+				}
+				break;
+			}
+			case IMPAIR_ERROR:
+				/* parse_impair() printed error */
+				exit(1);
+			case IMPAIR_HELP:
+				/* parse_impair() printed error */
+				exit(0);
 			}
 			continue;
 		}
@@ -1623,19 +1655,9 @@ int main(int argc, char **argv)
 
 	init_constants();
 	init_pluto_constants();
-
 	pluto_init_log();
+	pluto_init_nss(oco->nssdir);
 
-#ifdef FIPS_CHECK
-	/*
-	 * Probe FIPS support.  Part #1 of #2.
-	 *
-	 * This needs to occur very early, after pluto's log has been
-	 * initialized so that the result gets written to a file.
-	 *
-	 * This call is what triggers the FIPS Product: et.al. log
-	 * messages.
-	 */
 	enum lsw_fips_mode pluto_fips_mode = lsw_get_fips_mode();
 	if (pluto_fips_mode == LSW_FIPS_ON) {
 		/*
@@ -1653,13 +1675,6 @@ int main(int argc, char **argv)
 		libreswan_log("Forcing FIPS checks to true to emulate FIPS mode");
 		lsw_set_fips_mode(LSW_FIPS_ON);
 	}
-#endif
-
-	if (!pluto_init_nss(oco->nssdir)) {
-		loglog(RC_LOG_SERIOUS, "FATAL: NSS initialization failure");
-		exit_pluto(PLUTO_EXIT_NSS_FAIL);
-	}
-	libreswan_log("NSS crypto library initialized");
 
 	if (ocsp_enable) {
 		if (!init_nss_ocsp(ocsp_uri, ocsp_trust_name,
@@ -1673,58 +1688,56 @@ int main(int argc, char **argv)
 		}
 	}
 
-#ifdef FIPS_CHECK
 	/*
 	 * Probe FIPS support.  Part #2 of #2.
 	 *
 	 * Now that NSS is initialized, need to verify it matches the
 	 * mode pluto is in.
 	 */
-	libreswan_log("FIPS HMAC integrity support [enabled]");
-	{
-		bool nss_fips_mode = PK11_IsFIPS();
+	bool nss_fips_mode = PK11_IsFIPS();
 
-		/*
-		 * Now verify the consequences.  Always run the tests
-		 * as combinations such as NSS in fips mode but as out
-		 * of it could be bad.
-		 */
-		switch (pluto_fips_mode) {
-		case LSW_FIPS_UNKNOWN:
-			loglog(RC_LOG_SERIOUS, "ABORT: pluto FIPS mode could not be determined");
-			exit_pluto(PLUTO_EXIT_FIPS_FAIL);
-			break;
-		case LSW_FIPS_ON:
-			libreswan_log("FIPS mode enabled for pluto daemon");
-			if (nss_fips_mode) {
-				libreswan_log("NSS library is running in FIPS mode");
-			} else {
-				loglog(RC_LOG_SERIOUS, "ABORT: pluto in FIPS mode but NSS library is not");
-				exit_pluto(PLUTO_EXIT_FIPS_FAIL);
-			}
-			break;
-		case LSW_FIPS_OFF:
-			libreswan_log("FIPS mode disabled for pluto daemon");
-			if (nss_fips_mode) {
-				loglog(RC_LOG_SERIOUS, "Warning: NSS library is running in FIPS mode");
-			}
-			break;
-		case LSW_FIPS_UNSET:
-		default:
-			bad_case(pluto_fips_mode);
-		}
-
-		/* always run hmac check so we can print diagnostic */
-		bool fips_files = FIPSCHECK_verify_files(fips_package_files);
-
-		if (fips_files) {
-			libreswan_log("FIPS HMAC integrity verification self-test passed");
+	/*
+	 * Now verify the consequences.  Always run the tests
+	 * as combinations such as NSS in fips mode but as out
+	 * of it could be bad.
+	 */
+	switch (pluto_fips_mode) {
+	case LSW_FIPS_UNKNOWN:
+		loglog(RC_LOG_SERIOUS, "ABORT: pluto FIPS mode could not be determined");
+		exit_pluto(PLUTO_EXIT_FIPS_FAIL);
+		break;
+	case LSW_FIPS_ON:
+		libreswan_log("FIPS mode enabled for pluto daemon");
+		if (nss_fips_mode) {
+			libreswan_log("NSS library is running in FIPS mode");
 		} else {
-			loglog(RC_LOG_SERIOUS, "FIPS HMAC integrity verification self-test FAILED");
-		}
-		if (pluto_fips_mode == LSW_FIPS_ON && !fips_files) {
+			loglog(RC_LOG_SERIOUS, "ABORT: pluto in FIPS mode but NSS library is not");
 			exit_pluto(PLUTO_EXIT_FIPS_FAIL);
 		}
+		break;
+	case LSW_FIPS_OFF:
+		libreswan_log("FIPS mode disabled for pluto daemon");
+		if (nss_fips_mode) {
+			loglog(RC_LOG_SERIOUS, "Warning: NSS library is running in FIPS mode");
+		}
+		break;
+	case LSW_FIPS_UNSET:
+	default:
+		bad_case(pluto_fips_mode);
+	}
+
+#ifdef FIPS_CHECK
+	bool fips_files = FIPSCHECK_verify_files(fips_package_files);
+
+	libreswan_log("FIPS HMAC integrity support [enabled]");
+
+	if (fips_files) {
+		libreswan_log("FIPS HMAC integrity verification self-test passed");
+	} else {
+		loglog(RC_LOG_SERIOUS, "FIPS HMAC integrity verification self-test FAILED");
+	}
+	if (pluto_fips_mode == LSW_FIPS_ON && !fips_files) {
+		exit_pluto(PLUTO_EXIT_FIPS_FAIL);
 	}
 #else
 	libreswan_log("FIPS HMAC integrity support [disabled]");
@@ -1803,6 +1816,7 @@ int main(int argc, char **argv)
 /* Initialize all of the various features */
 
 	init_state_db();
+	init_connection_db();
 	init_server();
 
 	init_rate_log();
@@ -1866,6 +1880,8 @@ volatile bool exiting_pluto = false;
  */
 void exit_pluto(enum pluto_exit_code status)
 {
+	/* now whack; right? */
+	struct fd *whackfd = null_fd;
 	/*
 	 * Tell the world, well actually all the threads, that pluto
 	 * is exiting and they should quit.  Even if pthread_cancel()
@@ -1898,7 +1914,7 @@ void exit_pluto(enum pluto_exit_code status)
 	 */
 	stop_crypto_helpers();
 
-	free_root_certs();
+	free_root_certs(whackfd);
 	free_preshared_secrets();
 	free_remembered_public_keys();
 	delete_every_connection();
@@ -1952,37 +1968,38 @@ void exit_pluto(enum pluto_exit_code status)
 	exit(status);	/* exit, with our error code */
 }
 
-void show_setup_plutomain(const struct fd *whackfd)
+void show_setup_plutomain(struct show *s)
 {
-	whack_comment(whackfd, "config setup options:");	/* spacer */
-	whack_comment(whackfd, " ");	/* spacer */
-	whack_comment(whackfd, "configdir=%s, configfile=%s, secrets=%s, ipsecdir=%s",
+	show_separator(s);
+	show_comment(s, "config setup options:");
+	show_separator(s);
+	show_comment(s, "configdir=%s, configfile=%s, secrets=%s, ipsecdir=%s",
 		oco->confdir,
 		conffile, /* oco contains only a copy of hardcoded default */
 		oco->secretsfile,
 		oco->confddir);
 
-	whack_comment(whackfd, "nssdir=%s, dumpdir=%s, statsbin=%s",
+	show_comment(s, "nssdir=%s, dumpdir=%s, statsbin=%s",
 		oco->nssdir,
 		coredir,
 		pluto_stats_binary == NULL ? "unset" :  pluto_stats_binary);
 
 #ifdef USE_DNSSEC
-	whack_comment(whackfd, "dnssec-rootkey-file=%s, dnssec-trusted=%s",
+	show_comment(s, "dnssec-rootkey-file=%s, dnssec-trusted=%s",
 		pluto_dnssec_rootfile == NULL ? "<unset>" : pluto_dnssec_rootfile,
 		pluto_dnssec_trusted == NULL ? "<unset>" : pluto_dnssec_trusted);
 #endif
 
-	whack_comment(whackfd, "sbindir=%s, libexecdir=%s",
+	show_comment(s, "sbindir=%s, libexecdir=%s",
 		IPSEC_SBINDIR,
 		IPSEC_EXECDIR);
 
-	whack_comment(whackfd, "pluto_version=%s, pluto_vendorid=%s, audit-log=%s",
+	show_comment(s, "pluto_version=%s, pluto_vendorid=%s, audit-log=%s",
 		ipsec_version_code(),
 		pluto_vendorid,
 		bool_str(log_to_audit));
 
-	whack_comment(whackfd,
+	show_comment(s,
 		"nhelpers=%d, uniqueids=%s, "
 		"dnssec-enable=%s, "
 		"perpeerlog=%s, logappend=%s, logip=%s, shuntlifetime=%jds, xfrmlifetime=%jds",
@@ -1996,14 +2013,14 @@ void show_setup_plutomain(const struct fd *whackfd)
 		(intmax_t) pluto_xfrmlifetime
 	);
 
-	whack_comment(whackfd,
+	show_comment(s,
 		"ddos-cookies-threshold=%d, ddos-max-halfopen=%d, ddos-mode=%s",
-		pluto_max_halfopen,
 		pluto_ddos_threshold,
+		pluto_max_halfopen,
 		(pluto_ddos_mode == DDOS_AUTO) ? "auto" :
 			(pluto_ddos_mode == DDOS_FORCE_BUSY) ? "busy" : "unlimited");
 
-	whack_comment(whackfd,
+	show_comment(s,
 		"ikeport=%d, ikebuf=%d, msg_errqueue=%s, strictcrlpolicy=%s, crlcheckinterval=%jd, listen=%s, nflog-all=%d",
 		pluto_port,
 		pluto_sock_bufsize,
@@ -2014,33 +2031,33 @@ void show_setup_plutomain(const struct fd *whackfd)
 		pluto_nflog_group
 		);
 
-	whack_comment(whackfd,
+	show_comment(s,
 		"ocsp-enable=%s, ocsp-strict=%s, ocsp-timeout=%d, ocsp-uri=%s",
 		bool_str(ocsp_enable),
 		bool_str(ocsp_strict),
 		ocsp_timeout,
 		ocsp_uri != NULL ? ocsp_uri : "<unset>"
 		);
-	whack_comment(whackfd,
+	show_comment(s,
 		"ocsp-trust-name=%s",
 		ocsp_trust_name != NULL ? ocsp_trust_name : "<unset>"
 		);
 
-	whack_comment(whackfd,
+	show_comment(s,
 		"ocsp-cache-size=%d, ocsp-cache-min-age=%d, ocsp-cache-max-age=%d, ocsp-method=%s",
 		ocsp_cache_size, ocsp_cache_min_age, ocsp_cache_max_age,
 		ocsp_method == OCSP_METHOD_GET ? "get" : "post"
 		);
 
-	whack_comment(whackfd,
+	show_comment(s,
 		"global-redirect=%s, global-redirect-to=%s",
 		enum_name(&allow_global_redirect_names, global_redirect),
-		global_redirect_to != NULL ? global_redirect_to : "<unset>"
+		global_redirect_to()
 		);
 
 #ifdef HAVE_LABELED_IPSEC
-	whack_comment(whackfd, "secctx-attr-type=%d", secctx_attr_type);
+	show_comment(s, "secctx-attr-type=%d", secctx_attr_type);
 #else
-	whack_comment(whackfd, "secctx-attr-type=<unsupported>");
+	show_comment(s, "secctx-attr-type=<unsupported>");
 #endif
 }

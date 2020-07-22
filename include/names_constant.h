@@ -4,11 +4,13 @@
 #include <sys/types.h>
 #include <libreswan.h>
 
+extern enum_names ip_protocol_id_names;	/* aka ipproto_*; in ip_protocol.c */
+
 extern enum_names kern_interface_names;
 extern enum_names timer_event_names;
 
 extern enum_names dpd_action_names;
-#ifdef NETKEY_SUPPORT
+#ifdef XFRM_SUPPORT
 extern enum_names netkey_sa_dir_names;
 #endif
 extern enum_names sd_action_names;
@@ -59,8 +61,6 @@ extern enum_names ikev2_exchange_names;
 extern enum_names exchange_names_ikev1orv2;
 extern enum_enum_names exchange_type_names;
 extern enum_names ikev1_protocol_names;
-extern enum_names ikev2_protocol_names;
-extern enum_names ikev2_del_protocol_names;	/* subset of protocol names accepted by IKEv2 Delete */
 extern enum_names isakmp_transformid_names;
 extern enum_names ah_transformid_names;
 extern enum_names esp_transformid_names;
@@ -77,8 +77,10 @@ extern enum_names ikev1_notify_names;
 
 /* IKEv2 */
 extern enum_names ikev2_auth_names;
-extern enum_names ikev2_sec_proto_id_names;
 extern enum_names ikev2_hash_algorithm_names;
+extern enum_names ikev2_proposal_protocol_id_names;	/* 1=IKE SA, 2=AH, 3=ESP */
+extern enum_names ikev2_delete_protocol_id_names;	/* 1=IKE SA, 2=AH, 3=ESP */
+extern enum_names ikev2_notify_protocol_id_names;	/* NONE=0, 2=AH, 3=ESP; NOT IKE! */
 extern enum_names ikev2_trans_type_names;
 extern enum_names ikev2_trans_type_encr_names;
 extern enum_names ikev2_trans_type_prf_names;

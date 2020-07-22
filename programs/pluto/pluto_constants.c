@@ -25,10 +25,10 @@
 #include <string.h>
 #include <stdio.h>
 #include <netinet/in.h>
-#ifdef NETKEY_SUPPORT
+#ifdef XFRM_SUPPORT
 #include "linux/xfrm.h" /* local (if configured) or system copy */
 #endif
-#include <libreswan/passert.h>
+#include "passert.h"
 
 #include "constants.h"
 #include "enum_names.h"
@@ -47,15 +47,15 @@
  */
 
 static const char *const kern_interface_name[] = {
-	"no-kernel", /* run without stack */
-	"netkey",
-	"bsdkame",
-	"win2k",
+	[USE_NATIVE] = "native",
+	[USE_NETKEY] = "netkey",
+	[USE_BSDKAME] = "bsdkame",
 };
+
 enum_names kern_interface_names = {
-	NO_KERNEL, USE_WIN2K,
+	USE_NATIVE, USE_BSDKAME,
 	ARRAY_REF(kern_interface_name),
-	NULL, /* prefix */
+	"USE_", /* prefix */
 	NULL
 };
 
@@ -74,7 +74,7 @@ enum_names dpd_action_names = {
 	NULL
 };
 
-#ifdef NETKEY_SUPPORT
+#ifdef XFRM_SUPPORT
 /* netkey SA direction names */
 static const char *const netkey_sa_dir_name[] = {
 	"XFRM_IN",
@@ -112,19 +112,6 @@ static const char *const timer_event_name[] = {
 
 	E(EVENT_NULL),
 
-	E(EVENT_REINIT_SECRET),
-	E(EVENT_SHUNT_SCAN),
-	E(EVENT_PENDING_DDNS),
-	E(EVENT_SD_WATCHDOG),
-	E(EVENT_PENDING_PHASE2),
-	E(EVENT_CHECK_CRLS),
-	E(EVENT_REVIVE_CONNS),
-	E(EVENT_FREE_ROOT_CERTS),
-	E(EVENT_RESET_LOG_RATE_LIMIT),
-	E(EVENT_PROCESS_KERNEL_QUEUE),
-
-	E(GLOBAL_TIMERS_ROOF),
-
 	E(EVENT_SO_DISCARD),
 	E(EVENT_RETRANSMIT),
 
@@ -134,7 +121,6 @@ static const char *const timer_event_name[] = {
 
 	E(EVENT_v1_SEND_XAUTH),
 	E(EVENT_v1_SA_REPLACE_IF_USED),
-	E(EVENT_NAT_T_KEEPALIVE),
 	E(EVENT_DPD),
 	E(EVENT_DPD_TIMEOUT),
 	E(EVENT_CRYPTO_TIMEOUT),
@@ -205,6 +191,7 @@ static const char *const stf_status_strings[] = {
 	A(STF_SUSPEND),
 	A(STF_OK),
 	A(STF_INTERNAL_ERROR),
+	A(STF_V2_DELETE_EXCHANGE_INITIATOR_IKE_SA),
 	A(STF_FATAL),
 	A(STF_FAIL),
 #undef A
@@ -378,6 +365,19 @@ enum_enum_names sa_type_names = {
 	ARRAY_REF(sa_type_name),
 };
 
+static const char *const perspective_name[] = {
+	[NO_PERSPECTIVE] = "NO_PERSPECTIVE",
+	[LOCAL_PERSPECTIVE] = "LOCAL_PERSPECTIVE",
+	[REMOTE_PERSPECTIVE] = "REMOTE_PERSPECTIVE"
+};
+
+enum_names perspective_names = {
+	NO_PERSPECTIVE, REMOTE_PERSPECTIVE,
+	ARRAY_REF(perspective_name),
+	NULL, /* prefix */
+	NULL,
+};
+
 /* print a policy: like bitnamesof, but it also does the non-bitfields.
  * Suppress the shunt and fail fields if 0.
  */
@@ -411,11 +411,12 @@ static const enum_names *pluto_enum_names_checklist[] = {
 	&natt_method_names,
 	&routing_story,
 	&stf_status_names,
-#ifdef NETKEY_SUPPORT
+#ifdef XFRM_SUPPORT
 	&netkey_sa_dir_names,
 #endif
 	&v1_sa_type_names,
 	&v2_sa_type_names,
+	&perspective_names,
 };
 
 void init_pluto_constants(void) {

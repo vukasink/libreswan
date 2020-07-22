@@ -34,8 +34,6 @@
 #include <arpa/inet.h>
 #include <resolv.h>
 
-#include "libreswan/pfkeyv2.h"
-
 #include "sysdep.h"
 #include "constants.h"
 #include "lswalloc.h"
@@ -94,8 +92,8 @@ static hash_t hp_hasher(const ip_endpoint *local, const ip_endpoint *remote)
 	/* NULL -> any_address aka zero; must hash it */
 	ip_address raddr = (remote != NULL ? endpoint_address(remote) : endpoint_type(local)->any_address);
 	hash_t hash = zero_hash;
-	hash = hasher(address_as_shunk(&laddr), hash);
-	hash = hasher(address_as_shunk(&raddr), hash);
+	hash = hash_table_hasher(address_as_shunk(&laddr), hash);
+	hash = hash_table_hasher(address_as_shunk(&raddr), hash);
 	return hash;
 }
 
@@ -230,26 +228,22 @@ static void remove_host_pair(struct host_pair *hp)
 
 /* find head of list of connections with this pair of hosts */
 struct connection *find_host_pair_connections(const ip_address *myaddr,
-					      const ip_address *hisaddr)
+					      const ip_address *peer_addr)
 {
-	struct host_pair *hp = find_host_pair(myaddr, hisaddr);
+	struct host_pair *hp = find_host_pair(myaddr, peer_addr);
 
-	/*
-	DBG(DBG_CONTROLMORE, {
-		ipstr_buf bm;
-		ipstr_buf bh;
-		char ci[CONN_INST_BUF];
-
-		DBG_log("find_host_pair_conn: %s:%d %s:%d -> hp:%s%s",
-			ipstr(myaddr, &bm), myport,
-			hisaddr != NULL ? ipstr(hisaddr, &bh) : "%any",
-			hisport,
-			hp != NULL && hp->connections != NULL ?
-				hp->connections->name : "none",
-			hp != NULL && hp->connections != NULL ?
-				fmt_conn_instance(hp->connections, ci) : "");
-	    });
-	    */
+#if 0
+	address_buf bm, bh;
+	connection_buf ci;
+	dbg("find_host_pair_conn: %s:%d %s:%d -> hp:%s%s",
+	    str_address(myaddr, &bm), myport,
+	    peer_addr != NULL ? str_address(peer_addr, &bh) : "%any",
+	    peer_port,
+	    hp != NULL && hp->connections != NULL ?
+	    hp->connections->name : "none",
+	    hp != NULL && hp->connections != NULL ?
+	    str_conn_instance(hp->connections, ci) : ""));
+#endif
 
 	return hp == NULL ? NULL : hp->connections;
 }
@@ -260,30 +254,27 @@ void connect_to_host_pair(struct connection *c)
 		struct host_pair *hp = find_host_pair(&c->spd.this.host_addr,
 						      &c->spd.that.host_addr);
 
-		DBG(DBG_CONTROLMORE, {
-			ipstr_buf b1;
-			ipstr_buf b2;
-			DBG_log("connect_to_host_pair: %s:%d %s:%d -> hp@%p: %s",
-				ipstr(&c->spd.this.host_addr, &b1),
-				c->spd.this.host_port,
-				ipstr(&c->spd.that.host_addr, &b2),
-				c->spd.that.host_port,
-				hp,
-				(hp != NULL && hp->connections) ?
-					hp->connections->name : "none");
-		});
+		address_buf b1, b2;
+		dbg("connect_to_host_pair: %s:%d %s:%d -> hp@%p: %s",
+		    str_address(&c->spd.this.host_addr, &b1),
+		    c->spd.this.host_port,
+		    str_address(&c->spd.that.host_addr, &b2),
+		    c->spd.that.host_port,
+		    hp, (hp != NULL && hp->connections != NULL) ? hp->connections->name : "none");
 
 		if (hp == NULL) {
 			/* no suitable host_pair -- build one */
 			hp = alloc_thing(struct host_pair, "host_pair");
 			dbg("new hp@%p", hp);
 			hp->magic = host_pair_magic;
-			hp->local = endpoint(&c->spd.this.host_addr,
-					     nat_traversal_enabled ?
-					     pluto_port : c->spd.this.host_port);
-			hp->remote = endpoint(&c->spd.that.host_addr,
-					      nat_traversal_enabled ?
-					      pluto_port : c->spd.that.host_port);
+			hp->local = endpoint3(c->interface->protocol,
+					      &c->spd.this.host_addr,
+					      ip_hport(nat_traversal_enabled ? pluto_port
+						       : c->spd.this.host_port));
+			hp->remote = endpoint3(c->interface->protocol,
+					       &c->spd.that.host_addr,
+					       ip_hport(nat_traversal_enabled ? pluto_port
+							: c->spd.that.host_port));
 			hp->connections = NULL;
 			hp->pending = NULL;
 			add_hash_table_entry(&host_pairs, hp);
@@ -301,7 +292,7 @@ void connect_to_host_pair(struct connection *c)
 	}
 }
 
-void release_dead_interfaces(void)
+void release_dead_interfaces(struct fd *whackfd)
 {
 	for (unsigned i = 0; i < host_pairs.nr_slots; i++) {
 		struct list_head *bucket = &host_pairs.slots[i];
@@ -314,7 +305,7 @@ void release_dead_interfaces(void)
 					/* this connection's interface is going away */
 					enum connection_kind k = p->kind;
 
-					release_connection(p, TRUE);
+					release_connection(p, true, whackfd);
 
 					if (k <= CK_PERMANENT) {
 						/* The connection should have survived release:
@@ -322,7 +313,7 @@ void release_dead_interfaces(void)
 						 */
 						passert(p == *pp);
 
-						terminate_connection(p->name, FALSE);
+						terminate_connection(p->name, false, whackfd);
 						p->interface = NULL; /* withdraw orientation */
 
 						*pp = p->hp_next; /* advance *pp */
@@ -430,7 +421,7 @@ void update_host_pairs(struct connection *c)
 			 * client info
 			 */
 			if (!d->spd.that.has_client) {
-				addrtosubnet(&new_addr, &d->spd.that.client);
+				endtosubnet(&new_addr, &d->spd.that.client, HERE);
 			}
 
 			d->spd.that.host_addr = new_addr;
@@ -596,13 +587,13 @@ struct connection *find_next_host_connection(
 	struct connection *c,
 	lset_t req_policy, lset_t policy_exact_mask)
 {
-	DBGF(DBG_CONTROLMORE, "find_next_host_connection policy=%s",
-			bitnamesof(sa_policy_bit_names, req_policy));
+	dbg("find_next_host_connection policy=%s",
+	    bitnamesof(sa_policy_bit_names, req_policy));
 
 	for (; c != NULL; c = c->hp_next) {
-		DBGF(DBG_CONTROLMORE, "found policy = %s (%s)",
-			bitnamesof(sa_policy_bit_names, c->policy),
-			c->name);
+		dbg("found policy = %s (%s)",
+		    bitnamesof(sa_policy_bit_names, c->policy),
+		    c->name);
 
 		if (NEVER_NEGOTIATE(c->policy)) {
 			/* are we a block or clear connection? */
@@ -647,12 +638,15 @@ struct connection *find_next_host_connection(
 			break;
 	}
 
-	DBG(DBG_CONTROLMORE, {
-			char ci[CONN_INST_BUF];
-			DBG_log("find_next_host_connection returns %s%s",
-					c != NULL ? c->name : "empty",
-					c != NULL ? fmt_conn_instance(c, ci) :
-					""); });
+	if (DBGP(DBG_BASE)) {
+		if (c == NULL) {
+			DBG_log("find_next_host_connection returns <empty>");
+		} else {
+			connection_buf ci;
+			DBG_log("find_next_host_connection returns "PRI_CONNECTION"",
+				pri_connection(c, &ci));
+		}
+	}
 
 	return c;
 }
@@ -743,11 +737,13 @@ static struct connection *ikev2_find_host_connection(struct msg_digest *md,
 		if (LIN(POLICY_OPPORTUNISTIC, c->policy) &&
 		    c->ike_version == IKEv2) {
 			dbg_md(md, "oppo_instantiate");
-			c = oppo_instantiate(c, remote, &c->spd.that.id, &c->spd.this.host_addr, remote);
+			ip_address remote_addr = endpoint_address(remote);
+			c = oppo_instantiate(c, &remote_addr, &c->spd.that.id, &c->spd.this.host_addr, remote);
 		} else {
 			/* regular roadwarrior */
 			dbg_md(md, "rw_instantiate");
-			c = rw_instantiate(c, remote, NULL, NULL);
+			ip_address remote_addr = endpoint_address(remote);
+			c = rw_instantiate(c, &remote_addr, NULL, NULL);
 		}
 	} else {
 		/*
@@ -759,11 +755,13 @@ static struct connection *ikev2_find_host_connection(struct msg_digest *md,
 
 		if (c->kind == CK_TEMPLATE && c->spd.that.virt != NULL) {
 			dbg_md(md, "local endpoint has virt (vnet/vhost) set without wildcards - needs instantiation");
-			c = rw_instantiate(c, remote, NULL, NULL);
+			ip_address remote_addr = endpoint_address(remote);
+			c = rw_instantiate(c, &remote_addr, NULL, NULL);
 		} else if ((c->kind == CK_TEMPLATE) &&
 				(c->policy & POLICY_IKEV2_ALLOW_NARROWING)) {
 			dbg_md(md, "local endpoint has narrowing=yes - needs instantiation");
-			c = rw_instantiate(c, remote, NULL, NULL);
+			ip_address remote_addr = endpoint_address(remote);
+			c = rw_instantiate(c, &remote_addr, NULL, NULL);
 		}
 	}
 	return c;
@@ -802,10 +800,10 @@ struct connection *find_v2_host_pair_connection(struct msg_digest *md, lset_t *p
 	if (c == NULL) {
 		/* we might want to change this to a debug log message only */
 		endpoint_buf b;
-		plog_md(/*RC_LOG_SERIOUS*/md,
-			"%s message received on %s but no suitable connection found with IKEv2 policy",
-			enum_name(&ikev2_exchange_names, md->hdr.isa_xchg),
-			str_endpoint(&md->iface->local_endpoint, &b));
+		log_md(RC_LOG_SERIOUS, md,
+		       "%s message received on %s but no suitable connection found with IKEv2 policy",
+		       enum_name(&ikev2_exchange_names, md->hdr.isa_xchg),
+		       str_endpoint(&md->iface->local_endpoint, &b));
 		return NULL;
 	}
 

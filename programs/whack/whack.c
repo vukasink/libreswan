@@ -9,7 +9,7 @@
  * Copyright (C) 2008-2009 David McCullough <david_mccullough@securecomputing.com>
  * Copyright (C) 2010-2019 D. Hugh Redelmeier <hugh@mimosa.com>
  * Copyright (C) 2011 Mika Ilmaranta <ilmis@foobar.fi>
- * Copyright (C) 2012-2019 Paul Wouters <pwouters@redhat.com>
+ * Copyright (C) 2012-2020 Paul Wouters <pwouters@redhat.com>
  * Copyright (C) 2012 Philippe Vouters <philippe.vouters@laposte.net>
  * Copyright (C) 2013 David McCullough <ucdevel@gmail.com>
  * Copyright (C) 2013 Matt Rogers <mrogers@redhat.com>
@@ -76,13 +76,10 @@ static void help(void)
 		"	[--ipv4 | --ipv6] [--tunnelipv4 | --tunnelipv6] \\\n"
 		"	(--host <ip-address> | --id <identity>) \\\n"
 		"	[--ca <distinguished name>] \\\n"
-		"	[--nexthop <ip-address>] \\\n"
-		"	[--client <subnet>] \\\n"
-		"	[--clientprotoport <protocol>/<port>] [--dnskeyondemand] \\\n"
 		"	[--ikeport <port-number>] [--srcip <ip-address>] \\\n"
 		"	[--vtiip <ip-address>/mask] \\\n"
 		"	[--updown <updown>] \\\n"
-		"	[--authby <psk | rsasig | null>] \\\n"
+		"	[--authby <psk | rsasig | ecdsa | null>] \\\n"
 		"	[--groups <access control groups>] \\\n"
 		"	[--cert <friendly_name> | --ckaid <ckaid>] \\\n"
 		"	[--ca <distinguished name>] \\\n"
@@ -91,7 +88,7 @@ static void help(void)
 		"	[--client <subnet> \\\n"
 		"	[--clientprotoport <protocol>/<port>] \\\n"
 		"	[--dnskeyondemand] [--updown <updown>] \\\n"
-		"	[--psk] | [--rsasig] | [--rsa-sha2] | [--rsa-sha2_256] | \\\n"
+		"	[--psk] | [--rsasig] | [--rsa-sha1] | [--rsa-sha2] | [--rsa-sha2_256] | \\\n"
 		"		[--rsa-sha2_384 ] | [--rsa-sha2_512 ] | [ --auth-null] | \\\n"
 		"		[--auth-never] \\\n"
 		"	[--encrypt] [--authenticate] [--compress] [--sha2-truncbug] \\\n"
@@ -157,7 +154,7 @@ static void help(void)
 		"rekey: whack (--rekey-ike | --rekey-ipsec) \\\n"
 		"	--name <connection_name> [--asynchronous] \\\n"
 		"\n"
-		"active redirect: whack --redirect [--name <connection_name> | --peer-ip <ip-address>] \\\n"
+		"active redirect: whack --redirect --name <connection_name> \\\n"
 		"	--gateway <ip-address>\n"
 		"\n"
 		"opportunistic initiation: whack [--tunnelipv4 | --tunnelipv6] \\\n"
@@ -198,7 +195,7 @@ static void help(void)
 		"\n"
 		"status: whack [--status] | [--trafficstatus] | [--globalstatus] | \\\n"
 		"	[--clearstats] | [--shuntstatus] | [--fipsstatus] | [--briefstatus] \n"
-		"	[--showstates] \n"
+		"	[--showstates] | [--addresspoolstatus]\n"
 		"\n"
 		"refresh dns: whack --ddns\n"
 		"\n"
@@ -219,6 +216,8 @@ static const char *label = NULL;
 static const char *name = NULL;
 
 static const char *remote_host = NULL;
+
+static bool auth_specified = FALSE;
 
 /*
  * Print a string as a diagnostic, then exit whack unhappily
@@ -306,7 +305,6 @@ enum option_enums {
 	OPT_REKEY_IPSEC,
 
 	OPT_ACTIVE_REDIRECT,
-	OPT_ACTIVE_REDIRECT_PEER,
 	OPT_ACTIVE_REDIRECT_GW,
 
 	OPT_DDOS_BUSY,
@@ -318,6 +316,7 @@ enum option_enums {
 	OPT_REREADSECRETS,
 	OPT_REREADCRLS,
 	OPT_FETCHCRLS,
+	OPT_REREADCERTS,
 	OPT_REREADALL,
 
 	OPT_PURGEOCSP,
@@ -329,6 +328,7 @@ enum option_enums {
 	OPT_TRAFFIC_STATUS,
 	OPT_SHUNT_STATUS,
 	OPT_SHOW_STATES,
+	OPT_ADDRESSPOOL_STATUS,
 	OPT_FIPS_STATUS,
 	OPT_BRIEF_STATUS,
 
@@ -461,11 +461,25 @@ enum option_enums {
 	CD_XAUTHBY,
 	CD_XAUTHFAIL,
 	CD_NIC_OFFLOAD,
-	CD_RSA_SHA2_256,
-	CD_RSA_SHA2_384,
-	CD_RSA_SHA2_512,
 	CD_ESP,
 #   define CD_LAST CD_ESP	/* last connection description */
+
+/*
+ * Algorithm options (just because CD_ was full)
+ */
+#define ALGO_FIRST	ALGO_RSASIG
+	ALGO_RSASIG, /* SHA1 and (for IKEv2) SHA2 */
+	ALGO_RSA_SHA1,
+	ALGO_RSA_SHA2,
+	ALGO_RSA_SHA2_256,
+	ALGO_RSA_SHA2_384,
+	ALGO_RSA_SHA2_512,
+	ALGO_ECDSA, /* no SHA1 support */
+	ALGO_ECDSA_SHA2_256,
+	ALGO_ECDSA_SHA2_384,
+	ALGO_ECDSA_SHA2_512,
+
+#define ALGO_LAST	ALGO_ECDSA_SHA2_512
 
 /*
  * Policy options
@@ -551,7 +565,6 @@ static const struct option long_opts[] = {
 	{ "ike-socket-errqueue-toggle", no_argument, NULL, OPT_IKE_MSGERR + OO },
 
 	{ "redirect", no_argument, NULL, OPT_ACTIVE_REDIRECT + OO },
-	{ "peer-ip", required_argument, NULL, OPT_ACTIVE_REDIRECT_PEER + OO },
 	{ "gateway", required_argument, NULL, OPT_ACTIVE_REDIRECT_GW + OO },
 
 	{ "ddos-busy", no_argument, NULL, OPT_DDOS_BUSY + OO },
@@ -562,6 +575,7 @@ static const struct option long_opts[] = {
 
 	{ "rereadsecrets", no_argument, NULL, OPT_REREADSECRETS + OO },
 	{ "rereadcrls", no_argument, NULL, OPT_REREADCRLS + OO }, /* obsolete */
+	{ "rereadcerts", no_argument, NULL, OPT_REREADCERTS + OO },
 	{ "fetchcrls", no_argument, NULL, OPT_FETCHCRLS + OO },
 	{ "rereadall", no_argument, NULL, OPT_REREADALL + OO },
 
@@ -572,6 +586,7 @@ static const struct option long_opts[] = {
 	{ "clearstats", no_argument, NULL, OPT_CLEAR_STATS + OO },
 	{ "trafficstatus", no_argument, NULL, OPT_TRAFFIC_STATUS + OO },
 	{ "shuntstatus", no_argument, NULL, OPT_SHUNT_STATUS + OO },
+	{ "addresspoolstatus", no_argument, NULL, OPT_ADDRESSPOOL_STATUS + OO },
 	{ "fipsstatus", no_argument, NULL, OPT_FIPS_STATUS + OO },
 	{ "briefstatus", no_argument, NULL, OPT_BRIEF_STATUS + OO },
 	{ "showstates", no_argument, NULL, OPT_SHOW_STATES + OO },
@@ -630,10 +645,14 @@ static const struct option long_opts[] = {
 
 	{ "to", no_argument, NULL, CD_TO + OO },
 
+	/* option for cert rotation */
+
 #define PS(o, p)	{ o, no_argument, NULL, CDP_SINGLETON + POLICY_##p##_IX + OO }
 	PS("psk", PSK),
-	PS("rsasig", RSASIG),
-	PS("ecdsa", ECDSA),
+	/* These require more complicated settings now, done below
+	 * PS("rsasig", RSASIG),
+	 * PS("ecdsa", ECDSA),
+	 */
 	PS("auth-never", AUTH_NEVER),
 	PS("auth-null", AUTH_NULL),
 
@@ -725,17 +744,10 @@ static const struct option long_opts[] = {
 	{ "sendca", required_argument, NULL, CD_SEND_CA + OO },
 	{ "ipv4", no_argument, NULL, CD_CONNIPV4 + OO },
 	{ "ipv6", no_argument, NULL, CD_CONNIPV6 + OO },
-
-	{ "rsa-sha2", no_argument, NULL, CD_RSA_SHA2_256 + OO },
-	{ "rsa-sha2_256", no_argument, NULL, CD_RSA_SHA2_256 + OO },
-	{ "rsa-sha2_384", no_argument, NULL, CD_RSA_SHA2_384 + OO },
-	{ "rsa-sha2_512", no_argument, NULL, CD_RSA_SHA2_512 + OO },
-
 	{ "ikelifetime", required_argument, NULL, CD_IKELIFETIME + OO + NUMERIC_ARG },
 	{ "ipseclifetime", required_argument, NULL, CD_IPSECLIFETIME + OO + NUMERIC_ARG },
 	{ "retransmit-timeout", required_argument, NULL, CD_RETRANSMIT_T + OO + NUMERIC_ARG },
 	{ "retransmit-interval", required_argument, NULL, CD_RETRANSMIT_I + OO + NUMERIC_ARG },
-
 	{ "rekeymargin", required_argument, NULL, CD_RKMARGIN + OO + NUMERIC_ARG },
 	/* OBSOLETE */
 	{ "rekeywindow", required_argument, NULL, CD_RKMARGIN + OO + NUMERIC_ARG },
@@ -748,6 +760,18 @@ static const struct option long_opts[] = {
 	{ "esp", required_argument, NULL, CD_ESP + OO },
 	{ "remote_peer_type", required_argument, NULL, CD_REMOTEPEERTYPE + OO },
 	{ "nic-offload", required_argument, NULL, CD_NIC_OFFLOAD + OO},
+
+	{ "rsasig", no_argument, NULL, ALGO_RSASIG + OO },
+	{ "ecdsa", no_argument, NULL, ALGO_ECDSA + OO },
+	{ "ecdsa-sha2", no_argument, NULL, ALGO_ECDSA + OO },
+	{ "ecdsa-sha2_256", no_argument, NULL, ALGO_ECDSA_SHA2_256 + OO },
+	{ "ecdsa-sha2_384", no_argument, NULL, ALGO_ECDSA_SHA2_384 + OO },
+	{ "ecdsa-sha2_512", no_argument, NULL, ALGO_ECDSA_SHA2_512 + OO },
+	{ "rsa-sha1", no_argument, NULL, ALGO_RSA_SHA1 + OO },
+	{ "rsa-sha2", no_argument, NULL, ALGO_RSA_SHA2 + OO },
+	{ "rsa-sha2_256", no_argument, NULL, ALGO_RSA_SHA2_256 + OO },
+	{ "rsa-sha2_384", no_argument, NULL, ALGO_RSA_SHA2_384 + OO },
+	{ "rsa-sha2_512", no_argument, NULL, ALGO_RSA_SHA2_512 + OO },
 
 
 	PS("ikev1-allow", IKEV1_ALLOW),
@@ -770,9 +794,9 @@ static const struct option long_opts[] = {
 	PS("dns-match-id", DNS_MATCH_ID),
 #undef PS
 
-
 #ifdef HAVE_NM
-	{ "nm_configured", no_argument, NULL, CD_NMCONFIGURED + OO },
+	{ "nm_configured", no_argument, NULL, CD_NMCONFIGURED + OO }, /* backwards compat */
+	{ "nm-configured", no_argument, NULL, CD_NMCONFIGURED + OO },
 #endif
 #ifdef HAVE_LABELED_IPSEC
 	{ "labeledipsec", no_argument, NULL, CD_LABELED_IPSEC + OO },
@@ -807,7 +831,7 @@ static void check_life_time(deltatime_t life, time_t raw_limit,
 	deltatime_t limit = deltatime(raw_limit);
 	deltatime_t mint = deltatimescale(100 + msg->sa_rekey_fuzz, 100, msg->sa_rekey_margin);
 
-	if (deltaless(limit, life)) {
+	if (deltatime_cmp(limit, <, life)) {
 		char buf[200];	/* arbitrary limit */
 
 		snprintf(buf, sizeof(buf),
@@ -817,7 +841,7 @@ static void check_life_time(deltatime_t life, time_t raw_limit,
 			 (long)deltasecs(limit));
 		diag(buf);
 	}
-	if ((msg->policy & POLICY_DONT_REKEY) == LEMPTY && !deltaless(mint, life)) {
+	if ((msg->policy & POLICY_DONT_REKEY) == LEMPTY && !deltatime_cmp(mint, <, life)) {
 		char buf[200];	/* arbitrary limit */
 
 		snprintf(buf, sizeof(buf),
@@ -828,22 +852,6 @@ static void check_life_time(deltatime_t life, time_t raw_limit,
 			 msg->sa_rekey_fuzz,
 			 (long)deltasecs(mint));
 		diag(buf);
-	}
-}
-
-static void update_ports(struct whack_message *m)
-{
-	int port;
-
-	if (m->left.port != 0) {
-		port = htons(m->left.port);
-		setportof(port, &m->left.host_addr);
-		setportof(port, &m->left.client.addr);
-	}
-	if (m->right.port != 0) {
-		port = htons(m->right.port);
-		setportof(port, &m->right.host_addr);
-		setportof(port, &m->right.client.addr);
 	}
 }
 
@@ -863,7 +871,7 @@ static void check_end(struct whack_end *this, struct whack_end *that,
 	}
 
 	/* check protocol */
-	if (this->protocol != that->protocol) {
+	if (this->protoport.protocol != that->protoport.protocol) {
 		diagq("the protocol for leftprotoport and rightprotoport must be the same",
 			NULL);
 	}
@@ -896,7 +904,8 @@ int main(int argc, char **argv)
 		lst_seen = LEMPTY,
 		cd_seen = LEMPTY,
 		cdp_seen = LEMPTY,
-		end_seen = LEMPTY;
+		end_seen = LEMPTY,
+		algo_seen = LEMPTY;
 	const char
 		*af_used_by = NULL,
 		*tunnel_af_used_by = NULL;
@@ -919,6 +928,7 @@ int main(int argc, char **argv)
 	assert(LST_LAST - LST_FIRST < LELEM_ROOF);
 	assert(END_LAST - END_FIRST < LELEM_ROOF);
 	assert(CD_LAST - CD_FIRST < LELEM_ROOF);
+	assert(ALGO_LAST - ALGO_FIRST < LELEM_ROOF);
 
 	zero(&msg);	/* ??? pointer fields might not be NULLed */
 
@@ -1083,6 +1093,18 @@ int main(int argc, char **argv)
 				diagq("duplicated flag",
 				      long_opts[long_index].name);
 			cdp_seen |= f;
+			opts1_seen |= LELEM(OPT_CD);
+		} else if (ALGO_FIRST <= c && c <= ALGO_LAST) {
+			/*
+ 			 * ALGO options all translate into two lset's
+ 			 * msg.policy and msg.sighash
+ 			 */
+			lset_t f = LELEM(c - ALGO_FIRST);
+
+			if (algo_seen & f)
+				diagq("duplicated flag",
+				      long_opts[long_index].name);
+			algo_seen |= f;
 			opts1_seen |= LELEM(OPT_CD);
 		}
 
@@ -1282,18 +1304,9 @@ int main(int argc, char **argv)
 			msg.active_redirect = TRUE;
 			continue;
 
-		case OPT_ACTIVE_REDIRECT_PEER:	/* --peer-ip */
-			if (!msg.active_redirect)
-				diag("missing --redirect before --peer-ip");
-			diagq(ttoaddr(optarg, 0, msg.addr_family,
-				      &msg.active_redirect_peer), optarg);
-			if (isanyaddr(&msg.active_redirect_peer)) {
-				diagq("peer address isn't valid",
-					optarg);
-			}
-			continue;
-
 		case OPT_ACTIVE_REDIRECT_GW:	/* --gateway */
+			if (!msg.active_redirect)
+				diag("missing --redirect before --gateway");
 			diagq(ttoaddr(optarg, 0, msg.addr_family,
 				      &msg.active_redirect_gw), optarg);
 			if (isanyaddr(&msg.active_redirect_gw)) {
@@ -1328,6 +1341,7 @@ int main(int argc, char **argv)
 
 		case OPT_REREADSECRETS:	/* --rereadsecrets */
 		case OPT_REREADCRLS:    /* --rereadcrls */
+		case OPT_REREADCERTS:    /* --rereadcerts */
 		case OPT_FETCHCRLS:    /* --fetchcrls */
 			msg.whack_reread |= LELEM(c - OPT_REREADSECRETS);
 			continue;
@@ -1361,6 +1375,11 @@ int main(int argc, char **argv)
 
 		case OPT_SHUNT_STATUS:	/* --shuntstatus */
 			msg.whack_shunt_status = TRUE;
+			ignore_errors = TRUE;
+			continue;
+
+		case OPT_ADDRESSPOOL_STATUS:	/* --addresspoolstatus */
+			msg.whack_addresspool_status = TRUE;
 			ignore_errors = TRUE;
 			continue;
 
@@ -1475,7 +1494,7 @@ int main(int argc, char **argv)
 					 */
 				} else {
 					/*
-					 * We asssume that we have a DNS name.
+					 * We assume that we have a DNS name.
 					 * This logic matches confread.c.
 					 * ??? it would be kind to check
 					 * the syntax.
@@ -1571,7 +1590,7 @@ int main(int argc, char **argv)
 				diagq("<port-number> must be a number between 1 and 65535",
 					optarg);
 			}
-			msg.right.host_port = opt_whole;
+			msg.right.host_ikeport = opt_whole;
 			continue;
 
 		case END_NEXTHOP:	/* --nexthop <ip-address> */
@@ -1592,14 +1611,8 @@ int main(int argc, char **argv)
 			continue;
 
 		case END_VTIIP:	/* --vtiip <ip-address/mask> */
-			if (strchr(optarg, '/') == NULL)
-				diag("vtiip needs an address/mask value");
-			diagq(ttosubnet(optarg, 0,
-					msg.tunnel_addr_family,
-					'0' /* ip/mask host bits on allowed */,
-					&msg.right.host_vtiip), optarg);
-			/* ttosubnet() sets to lowest subnet address, fixup needed */
-			diagq(tnatoaddr(optarg, strchr(optarg, '/') - optarg, AF_UNSPEC, &msg.right.host_vtiip.addr), optarg);
+			diagq(text_cidr_to_subnet(shunk1(optarg), aftoinfo(msg.tunnel_addr_family),
+						  &msg.right.host_vtiip), optarg);
 			continue;
 
 		/*
@@ -1607,13 +1620,16 @@ int main(int argc, char **argv)
 		 *  Note: auth-never cannot be asymmetrical
 		 */
 		case END_AUTHBY:
+			auth_specified = TRUE;
 			if (streq(optarg, "psk"))
 				msg.right.authby = AUTHBY_PSK;
 			else if (streq(optarg, "null"))
 				msg.right.authby = AUTHBY_NULL;
 			else if (streq(optarg, "rsasig"))
 				msg.right.authby = AUTHBY_RSASIG;
-			else diag("authby option is not one of psk, rsasig or null");
+			else if (streq(optarg, "ecdsa"))
+				msg.right.authby = AUTHBY_ECDSA;
+			else diag("authby option is not one of psk, ecdsa, rsasig or null");
 			continue;
 
 		case END_CLIENT:	/* --client <subnet> */
@@ -1634,10 +1650,8 @@ int main(int argc, char **argv)
 
 		/* --clientprotoport <protocol>/<port> */
 		case END_CLIENTPROTOPORT:
-			diagq(ttoprotoport(optarg, 0, &msg.right.protocol,
-					   &msg.right.port,
-					   &msg.right.has_port_wildcard),
-			      optarg);
+			diagq(ttoprotoport(optarg, &msg.right.protoport),
+				optarg);
 			continue;
 
 		case END_DNSKEYONDEMAND:	/* --dnskeyondemand */
@@ -1662,10 +1676,12 @@ int main(int argc, char **argv)
 			end_seen = LEMPTY;
 			continue;
 
+		/* RSASIG/ECDSA need more than a single policy bit */
 		case CDP_SINGLETON + POLICY_PSK_IX:	/* --psk */
-		case CDP_SINGLETON + POLICY_RSASIG_IX:	/* --rsasig */
 		case CDP_SINGLETON + POLICY_AUTH_NEVER_IX:	/* --auth-never */
 		case CDP_SINGLETON + POLICY_AUTH_NULL_IX:	/* --auth-null */
+			auth_specified = TRUE;
+			/* FALL THROUGH */
 
 		case CDP_SINGLETON + POLICY_ENCRYPT_IX:	/* --encrypt */
 		/* --authenticate */
@@ -1941,7 +1957,7 @@ int main(int argc, char **argv)
 			continue;
 
 #ifdef HAVE_NM
-		case CD_NMCONFIGURED:	/* --nm_configured */
+		case CD_NMCONFIGURED:	/* --nm-configured */
 			msg.nmconfigured = TRUE;
 			continue;
 #endif
@@ -1969,14 +1985,62 @@ int main(int argc, char **argv)
 			 */
 			continue;
 
-		case CD_RSA_SHA2_256:	/* --rsa-sha2, --rsa-sha2_256 */
+		case ALGO_RSASIG: /* --rsasig */
+			auth_specified = TRUE;
+			msg.policy |= POLICY_RSASIG;
+			msg.policy |= POLICY_RSASIG_v1_5;
 			msg.sighash_policy |= POL_SIGHASH_SHA2_256;
-			continue;
-		case CD_RSA_SHA2_384:	/* --rsa-sha2_384 */
 			msg.sighash_policy |= POL_SIGHASH_SHA2_384;
-			continue;
-		case CD_RSA_SHA2_512:	/* --rsa-sha2_512 */
 			msg.sighash_policy |= POL_SIGHASH_SHA2_512;
+			continue;
+		case ALGO_RSA_SHA1: /* --rsa-sha1 */
+			auth_specified = TRUE;
+			msg.policy |= POLICY_RSASIG_v1_5;
+			continue;
+		case ALGO_RSA_SHA2: /* --rsa-sha2 */
+			auth_specified = TRUE;
+			msg.policy |= POLICY_RSASIG;
+			msg.sighash_policy |= POL_SIGHASH_SHA2_256;
+			msg.sighash_policy |= POL_SIGHASH_SHA2_384;
+			msg.sighash_policy |= POL_SIGHASH_SHA2_512;
+			continue;
+		case ALGO_RSA_SHA2_256:	/* --rsa-sha2_256 */
+			auth_specified = TRUE;
+			msg.sighash_policy |= POL_SIGHASH_SHA2_256;
+			msg.policy |= POLICY_RSASIG;
+			continue;
+		case ALGO_RSA_SHA2_384:	/* --rsa-sha2_384 */
+			auth_specified = TRUE;
+			msg.sighash_policy |= POL_SIGHASH_SHA2_384;
+			msg.policy |= POLICY_RSASIG;
+			continue;
+		case ALGO_RSA_SHA2_512:	/* --rsa-sha2_512 */
+			auth_specified = TRUE;
+			msg.sighash_policy |= POL_SIGHASH_SHA2_512;
+			msg.policy |= POLICY_RSASIG;
+			continue;
+
+		case ALGO_ECDSA: /* --ecdsa and --ecdsa-sha2 */
+			auth_specified = TRUE;
+			msg.policy |= POLICY_ECDSA;
+			msg.sighash_policy |= POL_SIGHASH_SHA2_256;
+			msg.sighash_policy |= POL_SIGHASH_SHA2_384;
+			msg.sighash_policy |= POL_SIGHASH_SHA2_512;
+			continue;
+		case ALGO_ECDSA_SHA2_256:	/* --ecdsa-sha2_256 */
+			auth_specified = TRUE;
+			msg.sighash_policy |= POL_SIGHASH_SHA2_256;
+			msg.policy |= POLICY_ECDSA;
+			continue;
+		case ALGO_ECDSA_SHA2_384:	/* --ecdsa-sha2_384 */
+			auth_specified = TRUE;
+			msg.sighash_policy |= POL_SIGHASH_SHA2_384;
+			msg.policy |= POLICY_ECDSA;
+			continue;
+		case ALGO_ECDSA_SHA2_512:	/* --ecdsa-sha2_512 */
+			auth_specified = TRUE;
+			msg.sighash_policy |= POL_SIGHASH_SHA2_512;
+			msg.policy |= POLICY_ECDSA;
 			continue;
 
 		case CD_CONNIPV6:	/* --ipv6 */
@@ -2110,9 +2174,7 @@ int main(int argc, char **argv)
 				msg.xauthby = XAUTHBY_ALWAYSOK;
 				continue;
 			} else {
-				fprintf(stderr,
-					"whack: unknown xauthby method '%s' ignored\n",
-					optarg);
+				diagq("whack: unknown xauthby method", optarg);
 			}
 			continue;
 
@@ -2223,15 +2285,15 @@ int main(int argc, char **argv)
 				     e != -1; e = next_enum(&debug_names, e)) {
 					LSWLOG_FILE(stdout, buf) {
 						if (LELEM(e) & DBG_ALL) {
-							lswlogs(buf, " *");
+							jam(buf, " *");
 						} else {
-							lswlogs(buf, "  ");
+							jam(buf, "  ");
 						}
-						lswlog_enum_short(buf, &debug_names, e);
+						jam_enum_short(buf, &debug_names, e);
 						const char *help = enum_name(&debug_help, e);
 						if (help != NULL) {
-							lswlogs(buf, ": ");
-							lswlogs(buf, help);
+							jam(buf, ": ");
+							jam_string(buf, help);
 						}
 					}
 				}
@@ -2247,10 +2309,19 @@ int main(int argc, char **argv)
 		case DBGOPT_NO_IMPAIR:	/* --no-impair */
 		{
 			bool enable = (c == DBGOPT_IMPAIR);
-			if (!parse_impair(optarg, &msg.impairment, enable)) {
-				/* parse_impair() issued the error */
+			realloc_things(msg.impairments, msg.nr_impairments,
+				       msg.nr_impairments+1, "impairments");
+			switch (parse_impair(optarg, &msg.impairments[msg.nr_impairments], enable, progname)) {
+			case IMPAIR_OK:
+				break;
+			case IMPAIR_HELP:
+				/* parse_impair() printed help */
+				exit(0);
+			case IMPAIR_ERROR:
+				/* parse_impair() printed the error */
 				exit(1);
 			}
+			msg.nr_impairments++;
 			continue;
 		}
 
@@ -2264,7 +2335,33 @@ int main(int argc, char **argv)
 		if (msg.policy & POLICY_IKEV1_ALLOW) {
 			diag("connection can no longer have --ikev1-allow and --ikev2-allow");
 		}
+	} else if (!(msg.policy & POLICY_IKEV1_ALLOW)) {
+		/* no ike version specified, default to IKEv2 */
+		msg.policy |= POLICY_IKEV2_ALLOW;
 	}
+
+	if (msg.policy & POLICY_IKEV1_ALLOW) {
+		if (msg.policy & POLICY_ECDSA)
+			diag("connection cannot specify --ecdsa and --ikev1-allow");
+		if (msg.sighash_policy != LEMPTY)
+			diag("connection cannot specify --ikev1-allow and --ecdsa-sha2 or --rsa-sha2");
+	} else {
+		if (msg.policy & POLICY_AGGRESSIVE)
+			diag("connection cannot specify --ikev2 and --aggressive");
+	}
+
+	if (!auth_specified) {
+		/* match the parser loading defaults to whack defaults */
+		msg.policy |= POLICY_RSASIG;
+		if (msg.policy & POLICY_IKEV2_ALLOW) {
+			msg.policy |= POLICY_RSASIG_v1_5;
+			msg.policy |= POLICY_ECDSA;
+			msg.sighash_policy |= POL_SIGHASH_SHA2_256;
+			msg.sighash_policy |= POL_SIGHASH_SHA2_384;
+			msg.sighash_policy |= POL_SIGHASH_SHA2_512;
+		}
+	}
+
 
 	if (oppo_dport != 0)
 		setportof(htons(oppo_dport), &msg.oppo_peer_client);
@@ -2393,6 +2490,7 @@ int main(int argc, char **argv)
 	      msg.whack_ddos != DDOS_undefined || msg.whack_ddns ||
 	      msg.whack_reread || msg.whack_crash || msg.whack_shunt_status ||
 	      msg.whack_status || msg.whack_global_status || msg.whack_traffic_status ||
+	      msg.whack_addresspool_status ||
 	      msg.whack_fips_status || msg.whack_brief_status || msg.whack_clear_stats || msg.whack_options ||
 	      msg.whack_shutdown || msg.whack_purgeocsp || msg.whack_seccomp_crashtest || msg.whack_show_states ||
 	      msg.whack_rekey_ike || msg.whack_rekey_ipsec))
@@ -2400,31 +2498,22 @@ int main(int argc, char **argv)
 
 	/* do the logic for --redirect command */
 	if (msg.active_redirect) {
-		bool redirect_peer_spec = address_is_specified(&msg.active_redirect_peer);
 		bool redirect_gw_spec = address_is_specified(&msg.active_redirect_gw);
 		msg.active_redirect = FALSE;	/* if we pass all the 'tests' we set it back to TRUE */
-		if (msg.name != NULL)
-			if (redirect_peer_spec)
-				diag("can not use both --name <connection_name> and --peer-ip <ip_address>");
-			else if (!redirect_gw_spec)
+		if (msg.name == NULL) {
+			diag("missing --name <connection_name>");
+		} else {
+			if (!redirect_gw_spec)
 				diag("missing --gateway <ip-address>");
 			else
 				msg.active_redirect = TRUE;
-		else
-			if (!redirect_peer_spec)
-				diag("missing [--name <connection_name> | --peer-ip <ip_address>]");
-			else if (!redirect_gw_spec)
-				diag("missing --gateway <ip-address>");
-			else
-				msg.active_redirect = TRUE;
+		}
 	}
 
 	if (msg.policy & POLICY_AGGRESSIVE) {
 		if (msg.ike == NULL)
 			diag("cannot specify aggressive mode without ike= to set algorithm");
 	}
-
-	update_ports(&msg);
 
 	/*
 	 * Check for wild values

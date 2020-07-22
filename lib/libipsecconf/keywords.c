@@ -240,14 +240,12 @@ static const struct keyword_enum_values kw_rsasigkey_list = VALUES_INITIALIZER(k
  * Values for protostack={netkey, none, mast or none }
  */
 static const struct keyword_enum_value kw_proto_stack_list[] = {
-	{ "none",         NO_KERNEL },
-	{ "auto",         USE_NETKEY }, /* auto now means netkey */
+	{ "auto",         USE_NATIVE },
+	{ "native",       USE_NATIVE },
 	{ "netkey",       USE_NETKEY },
-	{ "native",       USE_NETKEY },
 	{ "bsd",          USE_BSDKAME },
 	{ "kame",         USE_BSDKAME },
 	{ "bsdkame",      USE_BSDKAME },
-	{ "win2k",        USE_WIN2K },
 };
 
 static const struct keyword_enum_values kw_proto_stack = VALUES_INITIALIZER(kw_proto_stack_list);
@@ -469,6 +467,7 @@ const struct keyword_def ipsec_conf_keywords[] = {
   { "subnet",  kv_conn | kv_leftright | kv_processed,  kt_subnet,  KSCF_SUBNET, NULL, NULL, },
   { "subnets",  kv_conn | kv_leftright,  kt_appendlist,  KSCF_SUBNETS, NULL, NULL, },
   { "sourceip",  kv_conn | kv_leftright,  kt_ipaddr,  KSCF_SOURCEIP, NULL, NULL, },
+  { "ikeport",  kv_conn | kv_leftright,  kt_number,  KNCF_IKEPORT, NULL, NULL, },
   { "interface-ip", kv_conn | kv_leftright,  kt_subnet, KSCF_INTERFACE_IP, NULL, NULL, },
   { "vti",  kv_conn | kv_leftright | kv_processed,  kt_subnet,  KSCF_VTI_IP, NULL, NULL, },
   { "nexthop",  kv_conn | kv_leftright,  kt_ipaddr,  KSCF_NEXTHOP, NULL, NULL, },
@@ -608,9 +607,9 @@ const struct keyword_def ipsec_conf_keywords[] = {
   { "connalias",  kv_conn | kv_processed,  kt_appendstring,  KSCF_CONNALIAS, NULL, NULL, },
 
   /* attributes of the phase2 policy */
-  { "phase2alg",  kv_conn,  kt_string,  KSCF_ESP, NULL, NULL, },	/* synonyms: phase2alg, esp, ah */
-  { "esp",  kv_conn | kv_alias,  kt_string,  KSCF_ESP, NULL, NULL, },	/* synonyms: phase2alg, esp, ah */
-  { "ah",  kv_conn | kv_alias,  kt_string,  KSCF_ESP, NULL, NULL, },	/* synonyms: phase2alg, esp, ah */
+  { "esp",  kv_conn,  kt_string,  KSCF_ESP, NULL, NULL, },
+  { "ah",  kv_conn,  kt_string,  KSCF_ESP, NULL, NULL, },
+  { "phase2alg",  kv_conn | kv_alias,  kt_string,  KSCF_ESP, NULL, NULL, },	/* obsolete */
 
   { "phase2",  kv_conn | kv_policy,  kt_enum,  KNCF_PHASE2,  &kw_phase2types_list, NULL, },
 

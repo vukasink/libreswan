@@ -278,160 +278,148 @@ static void check_subnet_prefix(void)
 	}
 }
 
-static void check_subnet_port(void)
+static void check_cidr_to_subnet(void)
 {
 	static const struct test {
 		int family;
 		const char *in;
-		uint16_t hport;
-		uint8_t nport[2];
-		bool error;
+		const char *prefix;
+		const char *host;
 	} tests[] = {
-		/* zero port implied */
-		{ 4, "0.0.0.0/0", },
-		{ 6, "::0/0", },
-		{ 4, "101.102.0.0/16", },
-		{ 6, "1001:1002:1003:1004::/64", },
-		{ 4, "101.102.103.104/32", },
-		{ 6, "1001:1002:1003:1004:1005:1006:1007:1008/128", },
-		/* "reserved" zero port specified; reject? */
-		{ 4, "0.0.0.0/0:0", },
-		{ 6, "::0/0:0", },
-		{ 4, "101.102.0.0/16:0", },
-		{ 6, "1001:1002:1003:1004::/64:0", },
-		{ 4, "101.102.103.104/32:0", },
-		{ 6, "1001:1002:1003:1004:1005:1006:1007:1008/128:0", },
-		/* non-zero port mixed with mask; only allow when /32/128? */
-		{ 4, "0.0.0.0/0:65534", 65534, { 255, 254, }, },
-		{ 6, "::0/0:65534", 65534, { 255, 254, }, },
-		{ 4, "101.102.0.0/16:65534", 65534, { 255, 254, }, },
-		{ 6, "1001:1002:1003:1004::/64:65534", 65534, { 255, 254, }, },
-		{ 4, "101.102.103.104/32:65534", 65534, { 255, 254, }, },
-		{ 6, "1001:1002:1003:1004:1005:1006:1007:1008/128:65534", 65534, { 255, 254, }, },
-		/* hex/octal */
-		{ 4, "101.102.0.0/16:0xfffe", 65534, { 255, 254, }, },
-		{ 6, "1001:1002:1003:1004::/64:0177776", 65534, { 255, 254, }, },
-		/* invalid */
-		{ 4, "1.2.3.0/24:-1", .error = true, },
-		{ 4, "1.2.3.0/24:none",  .error = true, },
-		{ 4, "1.2.3.0/24:",  .error = true, },
+		{ 4, "128.0.0.0/0", "0.0.0.0", "128.0.0.0", },
+		{ 6, "8000::/0", "::", "8000::", },
+
+		{ 4, "128.0.0.0/1", "128.0.0.0", "0.0.0.0", },
+		{ 6, "8000::/1", "8000::", "::", },
+
+		{ 4, "1.2.255.4/23", "1.2.254.0", "0.0.1.4", },
+		{ 4, "1.2.255.255/24", "1.2.255.0", "0.0.0.255", },
+		{ 4, "1.2.3.255/25", "1.2.3.128", "0.0.0.127", },
+
+		{ 6, "1:2:3:ffff::/63", "1:2:3:fffe::", "0:0:0:1::", },
+		{ 6, "1:2:3:ffff:ffff::/64", "1:2:3:ffff::", "::ffff:0:0:0", },
+		{ 6, "1:2:3:4:ffff::/65", "1:2:3:4:8000::", "::7fff:0:0:0", },
+
+		{ 4, "1.2.3.255/31", "1.2.3.254", "0.0.0.1", },
+		{ 4, "1.2.3.255/32", "1.2.3.255", "0.0.0.0", },
+		{ 6, "1:2:3:4:5:6:7:ffff/127", "1:2:3:4:5:6:7:fffe", "::1", },
+		{ 6, "1:2:3:4:5:6:7:ffff/128", "1:2:3:4:5:6:7:ffff", "::", },
+
+		{ 4, "1.2.3.4", NULL, NULL, },
+		{ 6, "1:2:3:4:5:6:7:8", NULL, NULL, },
+		{ 4, "1.2.3.255/33", NULL, NULL, },
+		{ 6, "1:2:3:4:5:6:7:ffff/129", NULL, NULL, },
 	};
+
+#define OUT(FILE, FMT, ...)						\
+	PRINT(FILE, "%s %s %s"FMT,					\
+	      t->in,							\
+	      t->prefix != NULL ? t->prefix : "N/A",			\
+	      t->host != NULL ? t->host : "N/A",			\
+	      ##__VA_ARGS__)
 
 	for (size_t ti = 0; ti < elemsof(tests); ti++) {
 		const struct test *t = &tests[ti];
-		PRINT_IN(stdout, " -> %d", t->hport);
+		OUT(stdout, "");
 
-		sa_family_t af = SA_FAMILY(t->family);
-
-		ip_subnet s;
-		err_t oops = ttosubnet(t->in, 0, af, '6', &s);
-		if (oops != NULL && t->error) {
-			/* Error was expected, do nothing */
+		ip_subnet subnet;
+		err_t err = text_cidr_to_subnet(shunk1(t->in), IP_TYPE(t->family), &subnet);
+		if (err != NULL) {
+			if (t->prefix != NULL) {
+				FAIL(OUT, "cidr_to_subnet() unexpectedly failed: %s", err);
+			}
 			continue;
-		} else if (oops != NULL && !t->error) {
-			/* Error occurred, but we didn't expect one  */
-			FAIL_IN("ttosubnet failed: %s", oops);
-		} else if (oops == NULL && t->error) {
-			/* If no errors, but we expected one */
-			FAIL_IN("ttosubnet succeeded unexpectedly");
-		}
-		CHECK_TYPE(PRINT_IN, subnet_type(&s));
-
-		uint16_t hport = subnet_hport(&s);
-		if (!memeq(&hport, &t->hport, sizeof(hport))) {
-			FAIL_IN("subnet_hport() returned '%d', expected '%d'",
-				hport, t->hport);
+		} else if (t->prefix == NULL) {
+			FAIL(OUT, "cidr_to_subnet() unexpectedly succeeded");
 		}
 
-		uint16_t nport = subnet_nport(&s);
-		if (!memeq(&nport, &t->nport, sizeof(nport))) {
-			FAIL_IN("subnet_nport() returned '%04x', expected '%02x%02x'",
-				nport, t->nport[0], t->nport[1]);
+		CHECK_TYPE(OUT, subnet_type(&subnet));
+
+		ip_address prefix = subnet_prefix(&subnet);
+		address_buf pb;
+		const char *p = str_address(&prefix, &pb);
+		if (!streq(p, t->prefix)) {
+			FAIL(OUT, "subnet_prefix() returned '%s', expected '%s'",
+			     p, t->prefix);
 		}
 
-		/* tweak the port numbers */
-		uint16_t hport_plus_one = t->hport+1;
-		uint16_t nport_plus_one = ntohs(t->hport+1);
-		/* check math? */
-		uint8_t nport_plus_plus[2];
-		memcpy(nport_plus_plus, t->nport, sizeof(nport_plus_plus));
-		nport_plus_plus[1]++;
-		if (!memeq(&nport_plus_one, nport_plus_plus, sizeof(nport_plus_one))) {
-			FAIL_IN("can't do basic math");
+		ip_address host = subnet_host(&subnet);
+		address_buf hb;
+		const char *h = str_address(&host, &hb);
+		if (!streq(h, t->host)) {
+			FAIL(OUT, "subnet_host() returned '%s', expected '%s'",
+			     h, t->host);
 		}
-
-		/* hport+1 -> nport+1 */
-		ip_subnet hp = s;
-		update_subnet_hport(&hp, hport_plus_one);
-		uint16_t nportp = subnet_nport(&hp);
-		if (!memeq(&nportp, &nport_plus_one, sizeof(nportp))) {
-			FAIL_IN("subnet_nport(set_subnet_hport(+1)) returned '%04x', expected '%04x'",
-				nportp, nport_plus_one);
-		}
-
-		/* nport+1 -> hport+1 */
-		ip_subnet np = s;
-		update_subnet_nport(&np, nport_plus_one);
-		uint16_t hportp = subnet_hport(&np);
-		if (!memeq(&hportp, &hport_plus_one, sizeof(hportp))) {
-			FAIL_IN("subnet_hport(set_subnet_nport(+1)) returned '%d', expected '%d'",
-				hportp, hport_plus_one);
-		}
+#undef OUT
 	}
 }
 
-static void check_subnet_has(void)
+static void check_subnet_contains(void)
 {
 	static const struct test {
 		int family;
 		const char *in;
-		bool all_addresses;
-		bool no_addresses;
+		bool is_unset;
+		bool contains_all_addresses;
+		bool is_specified;
+		bool contains_one_address;
+		bool contains_no_addresses;
 	} tests[] = {
+		/* unset */
+		{ 0, NULL,           true, false, false, false, false, },
 		/* all_addresses */
-		{ 4, "0.0.0.0/0", .all_addresses = true, },
-		{ 6, "::/0", .all_addresses = true, },
-		/* port must be zero */
-		{ 4, "0.0.0.0/0:1", },
-		{ 6, "::/0:1", },
-
+		{ 4, "0.0.0.0/0",    false, true, false, false, false, },
+		{ 6, "::/0",         false, true, false, false, false, },
+		/* some_address+one_address? */
+		{ 4, "127.0.0./31",  false, false, true, false, false, },
+		{ 6, "1::/127",      false, false, true, false, false,  },
+		/* one_address */
+		{ 4, "127.0.0.1/32", false, false, true, true, false, },
+		{ 6, "::1/128",      false, false, true, true, false,  },
 		/* no_addresses */
-		{ 4, "0.0.0.0/32", .no_addresses = true, },
-		{ 6, "::/128", .no_addresses = true, },
-		/* port must be zero */
-		{ 4, "0.0.0.0/32:1", },
-		{ 6, "::/128:1",  },
-		/* address must be zero */
-		{ 4, "127.0.0.1/32:1", },
-		{ 6, "::1/128:1",  },
+		{ 4, "0.0.0.0/32",   false, false, false, false, true, },
+		{ 6, "::/128",       false, false, false, false, true, },
 	};
+#define OUT(FILE, FMT, ...)						\
+	PRINT(FILE, "%s %s unset=%s all=%s some=%s one=%s none=%s"FMT,	\
+	      pri_family(t->family),					\
+	      t->in != NULL ? t->in : "<unset>",			\
+	      bool_str(t->is_unset),					\
+	      bool_str(t->contains_all_addresses),			\
+	      bool_str(t->is_specified),				\
+	      bool_str(t->contains_one_address),			\
+	      bool_str(t->contains_no_addresses),			\
+	      ##__VA_ARGS__)
 
 	for (size_t ti = 0; ti < elemsof(tests); ti++) {
 		const struct test *t = &tests[ti];
-		PRINT_IN(stdout, " -> all_addresses: %s no_addresses: %s",
-			 bool_str(t->all_addresses), bool_str(t->no_addresses));
+		OUT(stdout, "");
 
-		sa_family_t af = SA_FAMILY(t->family);
-
-		ip_subnet s;
-		err_t oops = ttosubnet(t->in, 0, af, '6', &s);
-		if (oops != NULL) {
-			FAIL_IN("ttosubnet() failed: %s", oops);
-		}
-		CHECK_TYPE(PRINT_IN, subnet_type(&s));
-
-		bool all_addresses = subnet_contains_all_addresses(&s);
-		if (all_addresses != t->all_addresses) {
-			FAIL_IN("subnet_contains_all_addresses() returned %s, expecting %s",
-				bool_str(all_addresses), bool_str(t->all_addresses));
+		ip_subnet s = unset_subnet;
+		if (t->family != 0) {
+			sa_family_t af = SA_FAMILY(t->family);
+			err_t oops = ttosubnet(t->in, 0, af, '6', &s);
+			if (oops != NULL) {
+				FAIL(OUT, "ttosubnet() failed: %s", oops);
+			}
+			CHECK_TYPE(OUT, subnet_type(&s));
 		}
 
-		bool no_addresses = subnet_contains_no_addresses(&s);
-		if (no_addresses != t->no_addresses) {
-			FAIL_IN("subnet_contains_no_addresses() returned %s, expecting %s",
-				bool_str(no_addresses), bool_str(t->no_addresses));
+#define T(COND)								\
+		bool COND = subnet_##COND(&s);				\
+		if (COND != t->COND) {					\
+			FAIL(OUT, "subnet_"#COND"() returned %s, expecting %s", \
+			     bool_str(COND), bool_str(t->COND));	\
 		}
+		T(is_unset);
+		T(contains_no_addresses);
+		T(is_specified);
+		T(contains_one_address);
+		T(contains_all_addresses);
 	}
+#undef T
+#undef OUT
+
 }
 
 static bool address_is_0xff(const ip_address *a)
@@ -453,10 +441,10 @@ static void check_subnet_from_address(void)
 		const char *in;
 		const char *mask;
 	} tests[] = {
-		{ 4, "0.0.0.0", },
-		{ 6, "::", },
-		{ 4, "127.0.0.1", },
-		{ 6, "::1",  },
+		{ 4, "0.0.0.0", NULL, },
+		{ 6, "::", NULL, },
+		{ 4, "127.0.0.1", NULL, },
+		{ 6, "::1",  NULL, },
 	};
 
 	for (size_t ti = 0; ti < elemsof(tests); ti++) {
@@ -495,55 +483,88 @@ static void check_subnet_from_address(void)
 	}
 }
 
-static void check_subnet_from_endpoint(void)
+static void check_address_mask_to_subnet(void)
 {
 	static const struct test {
-		int family;
-		const char *in;
-		int hport;
+		const char *address;
+		const char *mask;
+		const char *subnet;
 	} tests[] = {
-		{ 4, "0.0.0.0", 1, },
-		{ 6, "::", 2, },
-		{ 4, "127.0.0.1", 3, },
-		{ 6, "::1",  4, },
+		/* XXX: this code isn/t used by IPv6? */
+
+		/* any address */
+		{ "0.0.0.0", "0.0.0.0", "0.0.0.0/0" },
+		{ "::", "::", "::/0" },
+
+		/* one address */
+		{ "1.2.3.4", "255.255.255.255", "1.2.3.4/32" },
+		{ "1:2:3:4:5:6:7:8", "ffff:ffff:ffff:ffff:ffff:ffff:ffff:ffff", "1:2:3:4:5:6:7:8/128" },
+
+		/* subnet boundary on byte */
+		{ "1.2.0.0", "255.255.0.0", "1.2.0.0/16" },
+		{ "1:2:3:4::", "ffff:ffff:ffff:ffff::", "1:2:3:4::/64" },
+
+		/* subnet boundary within byte */
+		{ "1.2.192.0", "255.255.192.0", "1.2.192.0/18" },
+		{ "1:2:3:4:c000::", "ffff:ffff:ffff:ffff:c000::", "1:2:3:4:c000::/66" },
+
+		/* address/mask type mashup */
+		{ "1.2.192.0", "::", NULL, },
+		{ "1:2:3:4:c000::", "0.0.0.0", NULL, },
+
+		/* gaps */
+		{ "1.2.3.4", "255.0.255.0", NULL, },
+		{ "1.2.3.4", "255.254.255.255", NULL, },
+
+		/* fixup screwup */
+		{ "1.2.3.255", "255.255.255.0", "1.2.3.0/24", },
+		{ "1.2.3.255", "255.255.255.128", "1.2.3.128/25", },
+
 	};
+#define OUT(FILE, FMT, ...)						\
+	PRINT(FILE, "%s/%s -> %s"FMT,					\
+	      t->address != NULL ? t->address : "N/A",			\
+	      t->mask != NULL ? t->mask : "N/A",			\
+	      t->subnet != NULL ? t->subnet : "<error>",		\
+	      ##__VA_ARGS__)
 
 	for (size_t ti = 0; ti < elemsof(tests); ti++) {
+		err_t err;
 		const struct test *t = &tests[ti];
-		PRINT_IN(stdout, " -> %d", t->hport);
+		OUT(stdout, "");
 
-		const struct ip_info *type = IP_TYPE(t->family);
-
-		ip_address a;
-		err_t oops = numeric_to_address(shunk1(t->in), type, &a);
-		if (oops != NULL) {
-			FAIL_IN("numeric_to_address() failed: %s", oops);
-		}
-		ip_endpoint e = endpoint(&a, t->hport);
-		ip_subnet s = subnet_from_endpoint(&e);
-
-		CHECK_TYPE(PRINT_IN, subnet_type(&s));
-
-		int hport = subnet_hport(&s);
-		if (hport != t->hport) {
-			FAIL_IN("subnet_port() returned %d, expecting %d",
-				hport, t->hport);
+		ip_address address;
+		err = numeric_to_address(shunk1(t->address), NULL, &address);
+		if (err != NULL) {
+			FAIL(OUT, "numeric_to_address(%s) failed: %s",
+			     t->address, err);
 		}
 
-		ip_address prefix = subnet_prefix(&s);
-		if (!sameaddr(&prefix, &a)) {
-			address_buf pb, ab;
-			FAIL_IN("subnet_prefix(&s) returned %s, expecting %s",
-				str_address(&prefix, &pb), str_address(&a, &ab));
+		ip_address mask;
+		err = numeric_to_address(shunk1(t->mask), NULL, &mask);
+		if (err != NULL) {
+			FAIL(OUT, "numeric_to_address(%s) failed: %s",
+			     t->mask, err);
 		}
 
-		ip_address mask = subnet_mask(&s);
-		if (!address_is_0xff(&mask)) {
-			address_buf mb;
-			FAIL_IN("subnet_mask(&s) returned %s, expecting 255.255.255.255",
-				str_address(&mask, &mb));
+		ip_subnet subnet;
+		err = address_mask_to_subnet(&address, &mask, &subnet);
+		if (err != NULL) {
+			if (t->subnet != NULL) {
+				FAIL(OUT, "address_mask_to_subnet() unexpectedly failed: %s", err);
+			}
+			continue;
+		} else if (t->subnet == NULL) {
+			FAIL(OUT, "address_mask_to_subnet() unexpectedly succeeded");
+		}
+
+		subnet_buf sb;
+		const char *s = str_subnet(&subnet, &sb);
+		if (!streq(s, t->subnet)) {
+			FAIL(OUT, "str_subnet() returned %s, expecting %s", s, t->subnet);
 		}
 	}
+#undef OUT
 }
 
 void ip_subnet_check(void)
@@ -552,8 +573,8 @@ void ip_subnet_check(void)
 	check_str_subnet_port();
 	check_subnet_prefix();
 	check_subnet_mask();
-	check_subnet_port();
-	check_subnet_has();
+	check_subnet_contains();
 	check_subnet_from_address();
-	check_subnet_from_endpoint();
+	check_address_mask_to_subnet();
+	check_cidr_to_subnet();
 }

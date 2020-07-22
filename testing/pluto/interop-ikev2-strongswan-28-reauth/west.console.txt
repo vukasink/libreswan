@@ -7,7 +7,7 @@ destination -I 192.0.1.254 192.0.2.254 is alive
 west #
  # ensure that clear text does not get through
 west #
- iptables -A INPUT -i eth1 -s 192.0.2.0/24 -j LOGDROP
+ iptables -A INPUT -i eth1 -s 192.0.2.0/24 -j DROP
 west #
  iptables -I INPUT -m policy --dir in --pol ipsec -j ACCEPT
 west #
@@ -86,7 +86,7 @@ Bypass LAN 192.0.1.0/24:  192.0.1.0/24 === 192.0.1.0/24 PASS
 Bypass LAN 192.1.2.0/24:  192.1.2.0/24 === 192.1.2.0/24 PASS
 Security Associations (1 up, 0 connecting):
 westnet-eastnet-ikev2[3]: ESTABLISHED XXX second ago, 192.1.2.45[west]...192.1.2.23[east]
-westnet-eastnet-ikev2{3}:  INSTALLED, TUNNEL, reqid 3, ESP SPIs: SPISPI_i SPISPI_o
+westnet-eastnet-ikev2{3}:  INSTALLED, TUNNEL, reqid 1, ESP SPIs: SPISPI_i SPISPI_o
 westnet-eastnet-ikev2{3}:   192.0.1.0/24 === 192.0.2.0/24
 west #
  ../bin/check-for-core.sh

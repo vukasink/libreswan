@@ -20,14 +20,6 @@ LEX=flex
 BISON=bison
 RM=rm
 
-# XXX: hack until everything uses a consistent .c.o rule.
-CFLAGS += -pthread
-CFLAGS += $(USERLAND_CFLAGS)
-CFLAGS += $(PORTINCLUDE)
-CFLAGS += -I$(top_srcdir)/include
-CFLAGS += $(NSSFLAGS)
-CFLAGS += $(CROSSFLAGS)
-
 ifneq ($(LD_LIBRARY_PATH),)
 LDFLAGS+=-L$(LD_LIBRARY_PATH)
 endif
@@ -117,23 +109,28 @@ ifdef OBJS
 # instance something is removed), a re-link is triggered.
 
 $(PROGRAM): $(OBJS) $(srcdir)/Makefile
-	cd $(builddir) && $(CC) $(CFLAGS) -o $@ $(OBJS) $(LDFLAGS) $(USERLAND_LDFLAGS)
+	cd $(builddir) && $(CC) $(USERLAND_CFLAGS) $(USERLAND_INCLUDES) $(CFLAGS)  -o $@ $(OBJS) $(USERLAND_LDFLAGS) $(LDFAGS)
 
 include $(top_srcdir)/mk/depend.mk
 
 else
 
-%: %.in $(top_srcdir)/Makefile.inc $(top_srcdir)/Makefile.ver | $(builddir)
+define transform_script
 	@echo  'IN' $< '->' $(builddir)/$@
-	${TRANSFORM_VARIABLES} < $< > $(builddir)/$@
-	@if [ -x $< ]; then chmod +x $(builddir)/$@; fi
-	@if [ "${PROGRAM}.in" = $< ]; then chmod +x $(builddir)/$@; fi
+	${TRANSFORM_VARIABLES} < $< > $(builddir)/$@.tmp
+	@if [ -x $< ]; then chmod +x $(builddir)/$@.tmp; fi
+	@if [ "${PROGRAM}" = $* ]; then chmod +x $(builddir)/$@.tmp; fi
+	mv $(builddir)/$@.tmp $(builddir)/$@
+endef
+
+%: %.sh $(top_srcdir)/Makefile.inc $(top_srcdir)/Makefile.ver | $(builddir)
+	$(transform_script)
+
+%: %.in $(top_srcdir)/Makefile.inc $(top_srcdir)/Makefile.ver | $(builddir)
+	$(transform_script)
 
 %: %.pl $(top_srcdir)/Makefile.inc $(top_srcdir)/Makefile.ver | $(builddir)
-	@echo  'PL' $< '->' $(builddir)/$@
-	@${TRANSFORM_VARIABLES} < $< > $(builddir)/$@
-	@if [ -x $< ]; then chmod +x $(builddir)/$@; fi
-	@if [ "${PROGRAM}.pl" = $< ]; then chmod +x $(builddir)/$@; fi
+	$(transform_script)
 
 endif
 

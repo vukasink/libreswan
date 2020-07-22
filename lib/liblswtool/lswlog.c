@@ -71,12 +71,12 @@ void lswlog_errno_suffix(struct lswlog *buf, int e)
 	}
 }
 
-void lswlog_log_prefix(struct lswlog *buf)
+void jam_cur_prefix(struct lswlog *buf)
 {
 	lswlogf(buf, "%s%s", progname, prog_suffix);
 }
 
-void log_jambuf(lset_t rc_flags, const struct fd *unused_object_fd UNUSED, jambuf_t *buf)
+void jambuf_to_logger(jambuf_t *buf, const struct logger *logger UNUSED, lset_t rc_flags)
 {
 	enum stream only = rc_flags & ~RC_MASK;
 	switch (only) {
@@ -105,6 +105,11 @@ void log_jambuf(lset_t rc_flags, const struct fd *unused_object_fd UNUSED, jambu
 	default:
 		bad_case(only);
 	}
+}
+
+void log_jambuf(lset_t rc_flags, struct fd *unused_object_fd UNUSED, jambuf_t *buf)
+{
+	jambuf_to_logger(buf, NULL, rc_flags);
 }
 
 void lswlog_to_error_stream(struct lswlog *buf)

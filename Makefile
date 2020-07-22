@@ -1,4 +1,4 @@
-# Libreswan master makefile
+# Libreswan top level Makefile
 #
 # Copyright (C) 1998-2002  Henry Spencer.
 # Copyright (C) 2003-2004  Xelerance Corporation
@@ -34,7 +34,9 @@ MAIN_RPM_SPECFILE = $(shell if [ -f /etc/fedora-release ]; then echo packaging/f
 SRCDIR?=$(shell pwd)/
 
 # dummy default rule
-def help:
+def: all
+
+help:
 	@echo
 	@echo "To build and install on a recent Linux kernel:"
 	@echo
@@ -205,6 +207,7 @@ local-install:
 		echo -e "**********************************************************************\n" ; \
 	fi \
 	fi
+ifeq ($(USE_XAUTHPAM),true)
 	@if test ! -f $(DESTDIR)/etc/pam.d/pluto ; then \
 		mkdir -p $(DESTDIR)/etc/pam.d/ ; \
 		$(INSTALL) $(INSTCONFFLAGS) pam.d/pluto $(DESTDIR)/etc/pam.d/pluto ; \
@@ -214,6 +217,7 @@ local-install:
 		echo "was already present.  You may wish to update it yourself if desired." ; \
 		echo -e "**********************************************************************\n" ; \
 	fi
+endif
 
 # Test only target (run by swan-install) that generates FIPS .*.hmac
 # file for pluto that will be verified by fipscheck.
@@ -224,7 +228,12 @@ local-install:
 
 .PHONY: install-fipshmac
 install-fipshmac:
+ifeq ($(USE_FIPSCHECK),true)
 	fipshmac $(LIBEXECDIR)/pluto
+else
+	@echo "install-fipshmac target requires compiling with USE_FIPSCHECK"
+	@exit 1
+endif
 
 include ${LIBRESWANSRCDIR}/mk/docker-targets.mk
 include ${LIBRESWANSRCDIR}/mk/kvm-targets.mk

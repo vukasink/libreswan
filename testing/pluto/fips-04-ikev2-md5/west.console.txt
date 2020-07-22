@@ -7,7 +7,7 @@ destination -I 192.0.1.254 192.0.2.254 is alive
 west #
  # ensure that clear text does not get through
 west #
- iptables -A INPUT -i eth1 -s 192.0.2.0/24 -j LOGDROP
+ iptables -A INPUT -i eth1 -s 192.0.2.0/24 -j DROP
 west #
  iptables -I INPUT -m policy --dir in --pol ipsec -j ACCEPT
 west #
@@ -32,9 +32,10 @@ west #
  ipsec auto --up westnet-eastnet-md5
 1v2 "westnet-eastnet-md5" #1: initiating IKEv2 IKE SA
 1v2 "westnet-eastnet-md5" #1: STATE_PARENT_I1: sent v2I1, expected v2R1
-002 "westnet-eastnet-md5" #1: STATE_PARENT_I1: received unauthenticated v2N_NO_PROPOSAL_CHOSEN - ignored
+003 "westnet-eastnet-md5" #1: dropping unexpected IKE_SA_INIT message containing NO_PROPOSAL_CHOSEN notification; message payloads: N; missing payloads: SA,KE,Ni
 002 "westnet-eastnet-md5" #1: IMPAIR: retransmit so deleting SA
 002 "westnet-eastnet-md5" #1: deleting state (STATE_PARENT_I1) and NOT sending notification
+002 "westnet-eastnet-md5" #1: deleting IKE SA but connection is supposed to remain up; schedule EVENT_REVIVE_CONNS
 west #
  ping -n -c 4 -I 192.0.1.254 192.0.2.254
 PING 192.0.2.254 (192.0.2.254) from 192.0.1.254 : 56(84) bytes of data.

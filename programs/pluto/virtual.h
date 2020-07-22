@@ -22,7 +22,7 @@ struct connection;
 struct spd_route;
 struct end;
 
-extern void show_virtual_private(const struct fd *whackfd);
+extern void show_virtual_private(struct show *s);
 
 extern void init_virtual_ip(const char *private_list);
 extern void free_virtual_ip(void);
@@ -36,7 +36,7 @@ extern bool is_virtual_sr(const struct spd_route *sr);
 extern bool is_virtual_vhost(const struct end *that);
 extern err_t check_virtual_net_allowed(const struct connection *c,
 	const ip_subnet *peer_net,
-	const ip_address *his_addr);
+	const ip_address *peers_addr);
 
 #endif /* _VIRTUAL_IP_H */
 

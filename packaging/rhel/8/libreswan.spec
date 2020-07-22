@@ -26,7 +26,7 @@
     USE_NM=true \\\
     USE_SECCOMP=true \\\
     USE_XAUTHPAM=true \\\
-    USE_NSS_PRF=true \\\
+    USE_NSS_KDF=true \\\
 %{nil}
 
 #global prever rc1
@@ -57,10 +57,11 @@ BuildRequires: libseccomp-devel
 BuildRequires: libselinux-devel
 BuildRequires: nspr-devel
 BuildRequires: nss-devel >= %{nss_version}
+BuildRequires: nss-tools
 BuildRequires: openldap-devel
 BuildRequires: pam-devel
 BuildRequires: pkgconfig
-BuildRequires: pkgconfig hostname
+BuildRequires: hostname
 BuildRequires: redhat-rpm-config
 BuildRequires: systemd-devel
 BuildRequires: unbound-devel >= %{unbound_version}
@@ -178,6 +179,12 @@ bunzip2 *.fax.bz2
 
 %{buildroot}%{_libexecdir}/ipsec/algparse -tp || { echo prooposal test failed; exit 1; }
 %{buildroot}%{_libexecdir}/ipsec/algparse -ta || { echo algorithm test failed; exit 1; }
+
+# self test for pluto daemon - this also shows which algorithms it allows in FIPS mode
+tmpdir=$(mktemp -d /tmp/libreswan-XXXXX)
+certutil -N -d sql:$tmpdir --empty-password
+%{buildroot}%{_libexecdir}/ipsec/pluto --selftest --nssdir $tmpdir --rundir $tmpdir
+: pluto self-test passed - verify FIPS algorithms allowed is still compliant with NIST
 
 %endif
 

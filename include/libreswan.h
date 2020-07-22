@@ -38,14 +38,6 @@
 
 #define DEBUG_NO_STATIC static
 
-#ifndef IPPROTO_COMP
-#  define IPPROTO_COMP 108
-#endif /* !IPPROTO_COMP */
-
-#ifndef IPPROTO_INT
-#  define IPPROTO_INT 61
-#endif /* !IPPROTO_INT */
-
 #if !defined(ESPINUDP_WITH_NON_IKE)
 #define ESPINUDP_WITH_NON_IKE   1       /* draft-ietf-ipsec-nat-t-ike-00/01 */
 #define ESPINUDP_WITH_NON_ESP   2       /* draft-ietf-ipsec-nat-t-ike-02    */
@@ -108,8 +100,6 @@ extern size_t splitkeytoid(const unsigned char *e, size_t elen,
 		    const unsigned char *m,
 		    size_t mlen, char *dst, size_t dstlen);
 #define KEYID_BUF       10      /* up to 9 text digits plus NUL */
-extern err_t ttoprotoport(char *src, size_t src_len, u_int8_t *proto, u_int16_t *port,
-			  bool *has_port_wildcard);
 
 /* odds and ends */
 extern const char *ipsec_version_code(void);

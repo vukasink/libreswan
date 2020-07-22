@@ -62,7 +62,7 @@ void cancelled_dh_v2(struct pcr_dh_v2 *dh)
  * invoke helper to do DH work.
  */
 void start_dh_v2(struct state *st,
-		 const char *name, enum original_role role,
+		 const char *name, enum sa_role role,
 		 PK11SymKey *skey_d_old, /* SKEYSEED IKE Rekey */
 		 const struct prf_desc *old_prf, /* IKE Rekey */
 		 const ike_spis_t *new_ike_spis,
@@ -71,12 +71,11 @@ void start_dh_v2(struct state *st,
 	struct pluto_crypto_req_cont *dh = new_pcrc(pcrc_func, name);
 	struct pcr_dh_v2 *const dhq = pcr_dh_v2_init(dh);
 
-	DBG(DBG_CONTROLMORE,
-	    DBG_log("offloading IKEv2 SKEYSEED using prf=%s integ=%s cipherkey=%s",
-		    st->st_oakley.ta_prf->common.fqn,
-		    st->st_oakley.ta_integ->common.fqn,
-		    st->st_oakley.ta_encrypt != NULL ?
-			st->st_oakley.ta_encrypt->common.fqn : "N/A"));
+	dbg("offloading IKEv2 SKEYSEED using prf=%s integ=%s cipherkey=%s",
+	    st->st_oakley.ta_prf->common.fqn,
+	    st->st_oakley.ta_integ->common.fqn,
+	    st->st_oakley.ta_encrypt != NULL ?
+	    st->st_oakley.ta_encrypt->common.fqn : "N/A");
 
 	/* convert appropriate data to dhq */
 	dhq->prf = st->st_oakley.ta_prf;
@@ -207,11 +206,10 @@ static void calc_skeyseed_v2(struct pcr_dh_v2 *sk,
 	setchunk_from_wire(nr, sk, &sk->nr);
 
 	passert(sk->prf != NULL);
-	DBG(DBG_CONTROLMORE,
-	    DBG_log("calculating skeyseed using prf=%s integ=%s cipherkey-size=%zu salt-size=%zu",
-		    sk->prf->common.name,
-		    (sk->integ ? sk->integ->common.name : "n/a"),
-		    key_size, salt_size));
+	dbg("calculating skeyseed using prf=%s integ=%s cipherkey-size=%zu salt-size=%zu",
+	    sk->prf->common.fqn,
+	    (sk->integ ? sk->integ->common.fqn : "n/a"),
+	    key_size, salt_size);
 
 	const struct prf_desc *prf = sk->prf;
 
@@ -350,7 +348,7 @@ void calc_dh_v2(struct pluto_crypto_req *r)
 	/* now calculate the (g^x)(g^y) --- need gi on responder, gr on initiator */
 
 	chunk_t remote_ke;
-	setchunk_from_wire(remote_ke, sk, sk->role == ORIGINAL_RESPONDER ? &sk->gi : &sk->gr);
+	setchunk_from_wire(remote_ke, sk, sk->role == SA_RESPONDER ? &sk->gi : &sk->gr);
 
 	DBG(DBG_CRYPT, DBG_dump_hunk("peer's g: ", remote_ke));
 

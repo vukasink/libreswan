@@ -382,7 +382,7 @@ void show_pluto_stats(const struct fd *whackfd)
 	whack_print(whackfd, "total.ipsec.type.encap=%lu", pstats_ipsec_encap_yes);
 	whack_print(whackfd, "total.ipsec.type.non_encap=%lu", pstats_ipsec_encap_no);
 	/*
-	 * Total counts only total of traffic by terminated IPsec Sa's.
+	 * Total counts only total of traffic by terminated IPsec SA's.
 	 * Should we call get_sa_info() for bytes of active IPsec SA's?
 	 */
 	whack_print(whackfd, "total.ipsec.traffic.in=%" PRIu64, pstats_ipsec_in_bytes);
@@ -477,7 +477,7 @@ void show_pluto_stats(const struct fd *whackfd)
 
 void clear_pluto_stats(void)
 {
-	DBG(DBG_CONTROL, DBG_log("clearing pluto stats"));
+	dbg("clearing pluto stats");
 
 	pstats_ipsec_sa = pstats_ikev1_sa = pstats_ikev2_sa = 0;
 	pstats_ikev1_fail = pstats_ikev2_fail = 0;

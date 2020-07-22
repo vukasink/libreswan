@@ -30,6 +30,7 @@
 #include "err.h"
 #include "ip_range.h"
 #include "ip_subnet.h"
+#include "ip_protoport.h"
 #include "lswcdefs.h"
 
 #ifndef _LIBRESWAN_H
@@ -56,7 +57,7 @@ typedef enum keyword_set int_set[KEY_NUMERIC_ROOF];
  */
 
 struct starter_end {
-	sa_family_t addr_family;
+	const struct ip_info *host_family;
 	enum keyword_host addrtype;
 	enum keyword_host nexttype;
 	ip_address addr;
@@ -70,14 +71,12 @@ struct starter_end {
 	char *id;
 	enum keyword_authby authby;
 
+	ip_protoport protoport;
+
 	enum keyword_pubkey rsakey1_type, rsakey2_type;
 	char *rsakey1;
 	char *rsakey2;
-	uint16_t port;
-	uint8_t protocol;
-	bool has_client_wildcard;
 	bool key_from_DNS_on_demand;
-	bool has_port_wildcard;
 	char *virt;
 	char *certx;
 	char *ckaid;

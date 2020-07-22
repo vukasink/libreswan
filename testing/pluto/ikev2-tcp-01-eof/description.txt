@@ -1,4 +1,8 @@
 IKEv2 TCP with truncated initial packet + close
 
-West sends an incomplete IKETCP request and then closes STDIN.  East
-(or the kernel) is expected to detect this and close the TCP stream.
+West sends an incomplete IKETCP request and then closes the outgoing
+stream.  The responder's pluto (east) or the kernel, are then expected
+to detect this and shutdown their end of the TCP stream.
+
+Code detecting this needs to look for a 0-byte read (aka EOF) (early
+kernels would instead return EAGAIN leading to repeated reads).

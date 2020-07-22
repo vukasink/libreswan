@@ -34,7 +34,7 @@
 #include "ipsecconf/confread.h"
 #include "ipsecconf/confwrite.h"
 #include "ipsecconf/starterwhack.h"
-#ifdef NETKEY_SUPPORT
+#ifdef XFRM_SUPPORT
 #include "addr_lookup.h"
 #endif
 #ifdef USE_DNSSEC
@@ -69,12 +69,20 @@ static char *environlize(const char *str)
  */
 static void resolve_defaultroute(struct starter_conn *conn UNUSED)
 {
-#ifdef NETKEY_SUPPORT
+#ifdef XFRM_SUPPORT
 	if (resolve_defaultroute_one(&conn->left, &conn->right, verbose != 0) == 1)
 		resolve_defaultroute_one(&conn->left, &conn->right, verbose != 0);
 	if (resolve_defaultroute_one(&conn->right, &conn->left, verbose != 0) == 1)
 		resolve_defaultroute_one(&conn->right, &conn->left, verbose != 0);
-#else /* !defined(NETKEY_SUPPORT) */
+#else /* !defined(XFRM_SUPPORT) */
+	/* What kind of result are we seeking? */
+	bool seeking_src = (conn->left.addrtype == KH_DEFAULTROUTE ||
+			    conn->right.addrtype == KH_DEFAULTROUTE);
+	bool seeking_gateway = (conn->left.nexttype == KH_DEFAULTROUTE ||
+				conn->right.nexttype == KH_DEFAULTROUTE);
+	if (!seeking_src && !seeking_gateway)
+		return;	/* this end already figured out */
+
 	fprintf(stderr, "addcon: without XFRM/NETKEY, cannot resolve_defaultroute()\n");
 	exit(7);	/* random code */
 #endif
@@ -103,6 +111,7 @@ static void init_seccomp_addconn(uint32_t def_action)
 	LSW_SECCOMP_ADD(ctx, close);
 	LSW_SECCOMP_ADD(ctx, connect);
 	LSW_SECCOMP_ADD(ctx, epoll_create);
+	LSW_SECCOMP_ADD(ctx, epoll_create1);
 	LSW_SECCOMP_ADD(ctx, epoll_ctl);
 	LSW_SECCOMP_ADD(ctx, epoll_wait);
 	LSW_SECCOMP_ADD(ctx, epoll_pwait);
@@ -125,6 +134,7 @@ static void init_seccomp_addconn(uint32_t def_action)
 	LSW_SECCOMP_ADD(ctx, mprotect);
 	LSW_SECCOMP_ADD(ctx, open);
 	LSW_SECCOMP_ADD(ctx, openat);
+	LSW_SECCOMP_ADD(ctx, pipe2);
 	LSW_SECCOMP_ADD(ctx, poll);
 	LSW_SECCOMP_ADD(ctx, prctl);
 	LSW_SECCOMP_ADD(ctx, read);

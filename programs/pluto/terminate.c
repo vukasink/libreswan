@@ -30,8 +30,6 @@
 #include <netinet/in.h>
 #include <arpa/inet.h>
 
-#include "libreswan/pfkeyv2.h"
-
 #include "sysdep.h"
 #include "constants.h"
 #include "lswalloc.h"
@@ -64,24 +62,30 @@
 
 #include "hostpair.h"
 
-static int terminate_a_connection(struct connection *c, void *arg UNUSED)
+static int terminate_a_connection(struct connection *c, struct fd *whackfd,
+				  void *unused_arg UNUSED)
 {
 	set_cur_connection(c);
-	libreswan_log("terminating SAs using this connection");
+	log_connection(RC_LOG, whackfd, c,
+		       "terminating SAs using this connection");
 	dbg("connection '%s' -POLICY_UP", c->name);
 	c->policy &= ~POLICY_UP;
 	flush_pending_by_connection(c);
 
 	if (shared_phase1_connection(c)) {
-		libreswan_log("IKE SA is shared - only terminating IPsec SA");
+		log_connection(RC_LOG, whackfd, c,
+			       "IKE SA is shared - only terminating IPsec SA");
 		if (c->newest_ipsec_sa != SOS_NOBODY) {
 			struct state *st = state_with_serialno(c->newest_ipsec_sa);
 			set_cur_state(st);
+			/* XXX: better? */
+			close_any(&st->st_logger->global_whackfd);
+			st->st_logger->global_whackfd = dup_any(whackfd);
 			delete_state(st);
 		}
 	} else {
-		DBG(DBG_CONTROL, DBG_log("connection not shared - terminating IKE and IPsec SA"));
-		delete_states_by_connection(c, FALSE);
+		dbg("connection not shared - terminating IKE and IPsec SA");
+		delete_states_by_connection(c, false, whackfd);
 	}
 
 	reset_cur_connection();
@@ -89,12 +93,13 @@ static int terminate_a_connection(struct connection *c, void *arg UNUSED)
 	return 1;
 }
 
-void terminate_connection(const char *name, bool quiet)
+void terminate_connection(const char *name, bool quiet, struct fd *whackfd)
 {
 	/*
-	 * Loop because more than one may match (master and instances)
-	 * But at least one is required (enforced by conn_by_name).
-	 * Don't log an error if not found before we checked aliases
+	 * Loop because more than one may match (template and
+	 * instances).  But at least one is required (enforced by
+	 * conn_by_name).  Don't log an error if not found before we
+	 * checked aliases
 	 */
 	struct connection *c = conn_by_name(name, true/*strict*/);
 
@@ -105,18 +110,19 @@ void terminate_connection(const char *name, bool quiet)
 			if (streq(c->name, name) &&
 			    c->kind >= CK_PERMANENT &&
 			    !NEVER_NEGOTIATE(c->policy))
-				(void) terminate_a_connection(c, NULL);
+				(void) terminate_a_connection(c, whackfd, NULL);
 			c = n;
 		}
 	} else {
-		int count = foreach_connection_by_alias(name, terminate_a_connection, NULL);
+		int count = foreach_connection_by_alias(name, whackfd, terminate_a_connection, NULL);
 		if (count == 0) {
 			if (!quiet)
-				loglog(RC_UNKNOWN_NAME,
-					"no such connection or aliased connection named \"%s\"", name);
+				log_global(RC_UNKNOWN_NAME, whackfd,
+					   "no such connection or aliased connection named \"%s\"", name);
 		} else {
-			loglog(RC_COMMENT, "terminated %d connections from aliased connection \"%s\"",
-				count, name);
+			log_global(RC_COMMENT, whackfd,
+				   "terminated %d connections from aliased connection \"%s\"",
+				   count, name);
 		}
 	}
 }

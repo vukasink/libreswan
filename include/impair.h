@@ -21,6 +21,9 @@
 
 #include "lswcdefs.h"
 
+struct fd;
+struct logger;
+
 /*
  * Meddle with the contents of a payload.
  */
@@ -119,10 +122,17 @@ struct impair {
 	bool unknown_payload_critical;
 	bool allow_dns_insecure;
 	bool send_pkcs7_thingie;
+	bool send_nonzero_reserved;
+	bool send_nonzero_reserved_id;
 	bool ikev1_del_with_notify;
 	bool bad_ike_auth_xchg;
+	bool rekey_initiate_supernet;
+	bool rekey_initiate_subnet;
+	bool rekey_respond_supernet;
+	bool rekey_respond_subnet;
 
 	bool tcp_use_blocking_write;
+	bool tcp_skip_setsockopt_espintcp;
 
 	/*
 	 * add more here
@@ -141,11 +151,30 @@ struct whack_impair {
 	unsigned how;
 };
 
-bool parse_impair(const char *optarg, struct whack_impair *whack_impair, bool enable);
+enum impair_status {
+	IMPAIR_OK = 1,
+	IMPAIR_HELP,
+	IMPAIR_ERROR,
+};
 
-void process_impair(const struct whack_impair *whack_impair);
+enum impair_status parse_impair(const char *optarg, struct whack_impair *whack_impair, bool enable, const char *progname);
 
-void help_impair(const char *prefix);
+enum impair_action {
+	CALL_IMPAIR_UPDATE,
+	CALL_INITIATE_v2_DELETE,
+	CALL_INITIATE_v2_LIVENESS,
+	CALL_INITIATE_v2_REKEY,
+	CALL_SEND_KEEPALIVE,
+	CALL_GLOBAL_EVENT,
+	CALL_STATE_EVENT,
+};
+
+bool process_impair(const struct whack_impair *whack_impair,
+		    void (*action)(enum impair_action, unsigned what,
+				   unsigned how, bool background,
+				   struct fd *whackfd),
+		    bool background, struct fd *whackfd,
+		    struct logger *logger);
 
 bool have_impairments(void);
 void jam_impairments(jambuf_t *buf, const char *sep);

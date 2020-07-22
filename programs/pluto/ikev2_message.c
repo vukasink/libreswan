@@ -45,6 +45,8 @@
 #include "ip_info.h"
 #include "iface.h"
 #include "ip_protocol.h"
+#include "ikev2_send.h"
+#include "log.h"
 
 /*
  * Determine the IKE version we will use for the IKE packet
@@ -181,23 +183,25 @@ pb_stream open_v2_message(pb_stream *reply,
 
 	/*
 	 * Message ID
-	 *
-	 * If there's a message digest (MD) (presumably containing a
-	 * message request) then this must be a response - use the
-	 * message digest's message ID.  A better choice should be
-	 * .st_msgid_lastrecv (or .st_msgid_lastrecv+1), but it isn't
-	 * clear if/when that value is updated and the IKE SA isn't
-	 * always available.
-	 *
-	 * If it isn't a response then use the IKE SA's
-	 * .st_msgid_nextuse.  The caller still needs to both
-	 * increment .st_msgid_nextuse (can't do this until the packet
-	 * is finished) and update .st_msgid (only caller knows if
-	 * this is for the IKE SA or a CHILD SA).
 	 */
 	if (md != NULL) {
+		/*
+		 * Since there is a message digest (MD) it is assumed
+		 * to contain a message request.  Presumably this open
+		 * is for the message response - use the Message ID
+		 * from the request.  A better choice would be
+		 * .st_v2_msgid_windows.responder.recv+1, but it isn't
+		 * clear if/when that value is updated and the IKE SA
+		 * isn't always available.
+		 */
 		hdr.isa_msgid = md->hdr.isa_msgid;
 	} else {
+		/*
+		 * If it isn't a response then use the IKE SA's
+		 * .st_v2_msgid_windows.initiator.sent+1.  The field
+		 * will be updated as part of finishing the state
+		 * transition and sending the message.
+		 */
 		passert(ike != NULL);
 		hdr.isa_msgid = ike->sa.st_v2_msgid_windows.initiator.sent + 1;
 	}
@@ -231,11 +235,13 @@ static bool emit_v2SK_iv(v2SK_payload_t *sk)
 	return true;
 }
 
-v2SK_payload_t open_v2SK_payload(pb_stream *container,
+v2SK_payload_t open_v2SK_payload(struct logger *logger,
+				 pb_stream *container,
 				 struct ike_sa *ike)
 {
 	static const v2SK_payload_t empty_sk;
 	v2SK_payload_t sk = {
+		.logger = logger,
 		.ike = ike,
 		.payload = {
 		    .ptr = container->cur,
@@ -250,16 +256,18 @@ v2SK_payload_t open_v2SK_payload(pb_stream *container,
 		.isag_critical = build_ikev2_critical(false),
 	};
 	if (!out_struct(&e, &ikev2_sk_desc, container, &sk.pbs)) {
-		libreswan_log("error initializing SK header for encrypted %s message",
-			      container->name);
+		log_message(RC_LOG, logger,
+			    "error initializing SK header for encrypted %s message",
+			    container->name);
 		return empty_sk;
 	}
 
 	/* emit IV and save location */
 
 	if (!emit_v2SK_iv(&sk)) {
-		libreswan_log("error initializing IV for encrypted %s message",
-			      container->name);
+		log_message(RC_LOG, logger,
+			    "error initializing IV for encrypted %s message",
+			    container->name);
 		return empty_sk;
 	}
 
@@ -290,9 +298,8 @@ bool close_v2SK_payload(v2SK_payload_t *sk)
 	} else {
 		padding = 1;
 	}
-	DBG(DBG_EMITTING,
-	    DBG_log("adding %zd bytes of padding (including 1 byte padding-length)",
-		    padding));
+	dbg("adding %zd bytes of padding (including 1 byte padding-length)",
+	    padding);
 	for (unsigned i = 0; i < padding; i++) {
 		if (!out_repeated_byte(i, 1, &sk->pbs, "padding and length")) {
 			libreswan_log("error initializing padding for encrypted %s payload",
@@ -607,7 +614,7 @@ static bool ikev2_verify_and_decrypt_sk_payload(struct ike_sa *ike,
 			return false;
 		}
 
-		DBG(DBG_PARSING, DBG_log("authenticator matched"));
+		dbg("authenticator matched");
 
 		/* decrypt */
 
@@ -690,24 +697,25 @@ static bool ikev2_reassemble_fragments(struct state *st,
 		return false;
 	}
 
-	passert(st->st_v2_rfrags != NULL);
+	struct v2_incomming_fragments **frags = &st->st_v2_incomming[v2_msg_role(md)];
+	passert(*frags != NULL);
 
 	chunk_t plain[MAX_IKE_FRAGMENTS + 1];
-	passert(elemsof(plain) == elemsof(st->st_v2_rfrags->frags));
+	passert(elemsof(plain) == elemsof((*frags)->frags));
 	unsigned int size = 0;
-	for (unsigned i = 1; i <= st->st_v2_rfrags->total; i++) {
-		struct v2_ike_rfrag *frag = &st->st_v2_rfrags->frags[i];
+	for (unsigned i = 1; i <= (*frags)->total; i++) {
+		struct v2_incomming_fragment *frag = &(*frags)->frags[i];
 		/*
 		 * Point PLAIN at the encrypted fragment and then
 		 * decrypt in-place.  After the decryption, PLAIN will
 		 * have been adjusted to just point at the data.
 		 */
 		plain[i] = frag->cipher;
-		if (!ikev2_verify_and_decrypt_sk_payload(ike_sa(st), md,
+		if (!ikev2_verify_and_decrypt_sk_payload(ike_sa(st, HERE), md,
 							 &plain[i], frag->iv)) {
 			loglog(RC_LOG_SERIOUS, "fragment %u of %u invalid",
-			       i, st->st_v2_rfrags->total);
-			release_fragments(st);
+			       i, (*frags)->total);
+			free_v2_incomming_fragments(frags);
 			return false;
 		}
 		size += plain[i].len;
@@ -720,7 +728,7 @@ static bool ikev2_reassemble_fragments(struct state *st,
 	pexpect(md->raw_packet.ptr == NULL); /* empty */
 	md->raw_packet = alloc_chunk(size, "IKEv2 fragments buffer");
 	unsigned int offset = 0;
-	for (unsigned i = 1; i <= st->st_v2_rfrags->total; i++) {
+	for (unsigned i = 1; i <= (*frags)->total; i++) {
 		passert(offset + plain[i].len <= size);
 		memcpy(md->raw_packet.ptr + offset, plain[i].ptr,
 		       plain[i].len);
@@ -736,14 +744,14 @@ static bool ikev2_reassemble_fragments(struct state *st,
 	struct payload_digest sk = {
 		.pbs = same_chunk_as_in_pbs(md->raw_packet, "decrypted SFK payloads"),
 		.payload_type = ISAKMP_NEXT_v2SK,
-		.payload.generic.isag_np = st->st_v2_rfrags->first_np,
+		.payload.generic.isag_np = (*frags)->first_np,
 	};
 	struct payload_digest *skf = md->chain[ISAKMP_NEXT_v2SKF];
 	md->chain[ISAKMP_NEXT_v2SKF] = NULL;
 	md->chain[ISAKMP_NEXT_v2SK] = skf;
 	*skf = sk; /* scribble */
 
-	release_fragments(st);
+	free_v2_incomming_fragments(frags);
 
 	return true;
 }
@@ -781,16 +789,15 @@ bool ikev2_decrypt_msg(struct state *st, struct msg_digest *md)
 
 		chunk_t c = chunk2(md->packet_pbs.start,
 				  e_pbs->roof - md->packet_pbs.start);
-		ok = ikev2_verify_and_decrypt_sk_payload(ike_sa(st), md, &c,
+		ok = ikev2_verify_and_decrypt_sk_payload(ike_sa(st, HERE), md, &c,
 							 e_pbs->cur - md->packet_pbs.start);
 		md->chain[ISAKMP_NEXT_v2SK]->pbs = same_chunk_as_in_pbs(c, "decrypted SK payload");
 	}
 
-	DBG(DBG_CONTROLMORE,
-	    DBG_log("#%lu ikev2 %s decrypt %s",
-		    st->st_serialno,
-		    enum_name(&ikev2_exchange_names, md->hdr.isa_xchg),
-		    ok ? "success" : "failed"));
+	dbg("#%lu ikev2 %s decrypt %s",
+	    st->st_serialno,
+	    enum_name(&ikev2_exchange_names, md->hdr.isa_xchg),
+	    ok ? "success" : "failed");
 
 	return ok;
 }
@@ -820,13 +827,14 @@ bool ikev2_decrypt_msg(struct state *st, struct msg_digest *md)
  *
  */
 
-static stf_status v2_record_outbound_fragment(struct ike_sa *ike,
-					      const struct isakmp_hdr *hdr,
-					      enum next_payload_types_ikev2 skf_np,
-					      struct v2_ike_tfrag **fragp,
-					      chunk_t *fragment,	/* read-only */
-					      unsigned int number, unsigned int total,
-					      const char *desc)
+static bool record_outbound_fragment(struct logger *logger,
+				     struct ike_sa *ike,
+				     const struct isakmp_hdr *hdr,
+				     enum next_payload_types_ikev2 skf_np,
+				     struct v2_outgoing_fragment **fragp,
+				     chunk_t *fragment,	/* read-only */
+				     unsigned int number, unsigned int total,
+				     const char *desc)
 {
 	pb_stream frag_stream;
 	unsigned char frag_buffer[PMAX(MIN_MAX_UDP_DATA_v4, MIN_MAX_UDP_DATA_v6)];
@@ -840,7 +848,7 @@ static stf_status v2_record_outbound_fragment(struct ike_sa *ike,
 	pb_stream rbody;
 	if (!out_struct(hdr, &isakmp_hdr_desc, &frag_stream,
 			&rbody))
-		return STF_INTERNAL_ERROR;
+		return false;
 
 	/*
 	 * Fake up an SK payload description sufficient to fool the
@@ -873,14 +881,15 @@ static stf_status v2_record_outbound_fragment(struct ike_sa *ike,
 		.isaskf_total = total,
 	};
 	if (!out_struct(&e, &ikev2_skf_desc, &rbody, &skf.pbs))
-		return STF_INTERNAL_ERROR;
+		return false;
 
 	/* emit IV and save location */
 
 	if (!emit_v2SK_iv(&skf)) {
-		libreswan_log("error initializing IV for encrypted %s message",
-			      desc);
-		return STF_INTERNAL_ERROR;
+		log_message(RC_LOG, logger,
+			    "error initializing IV for encrypted %s message",
+			    desc);
+		return false;
 	}
 
 	/* save cleartext start */
@@ -891,10 +900,10 @@ static stf_status v2_record_outbound_fragment(struct ike_sa *ike,
 
 	if (!pbs_out_hunk(*fragment, &skf.pbs,
 			  "cleartext fragment"))
-		return STF_INTERNAL_ERROR;
+		return false;
 
 	if (!close_v2SK_payload(&skf)) {
-		return STF_INTERNAL_ERROR;
+		return false;
 	}
 
 	close_output_pbs(&rbody);
@@ -902,25 +911,21 @@ static stf_status v2_record_outbound_fragment(struct ike_sa *ike,
 
 	stf_status ret = encrypt_v2SK_payload(&skf);
 	if (ret != STF_OK) {
-		return ret;
+		log_message(RC_LOG, logger, "error encrypting fragment %u", number);
+		return false;
 	}
 
-	*fragp = alloc_thing(struct v2_ike_tfrag, "v2_ike_tfrag");
-	(*fragp)->next = NULL;
-	(*fragp)->cipher = clone_out_pbs_as_chunk(&frag_stream, desc);
-
-	return STF_OK;
+	dbg("recording fragment %u", number);
+	record_v2_outgoing_fragment(&frag_stream, desc, fragp);
+	return true;
 }
 
-static stf_status v2_record_outbound_fragments(struct state *st,
-					       const pb_stream *rbody,
-					       v2SK_payload_t *sk,
-					       const char *desc)
+static bool record_outbound_fragments(const pb_stream *rbody,
+				      v2SK_payload_t *sk,
+				      const char *desc,
+				      struct v2_outgoing_fragment **frags)
 {
-	unsigned int len;
-
-	release_fragments(st);
-	free_chunk_content(&st->st_tpacket);
+	free_v2_outgoing_fragments(frags);
 
 	/*
 	 * fragment contents:
@@ -937,9 +942,14 @@ static stf_status v2_record_outbound_fragments(struct state *st,
 	 * function above be left to do the computation on-the-fly?
 	 */
 
-	len = endpoint_type(&sk->ike->sa.st_remote_endpoint)->ikev2_max_fragment_size;
+	unsigned int len = endpoint_type(&sk->ike->sa.st_remote_endpoint)->ikev2_max_fragment_size;
 
-	if (sk->ike->sa.st_interface != NULL && sk->ike->sa.st_interface->ike_float)
+	/*
+	 * If we are doing NAT, so that the other end doesn't mistake
+	 * this message for ESP, each message needs a non-ESP_Marker
+	 * prefix.
+	 */
+	if (sk->ike->sa.st_interface != NULL && sk->ike->sa.st_interface->esp_encapsulation_enabled)
 		len -= NON_ESP_MARKER_SIZE;
 
 	len -= NSIZEOF_isakmp_hdr + NSIZEOF_ikev2_skf;
@@ -958,9 +968,10 @@ static stf_status v2_record_outbound_fragments(struct state *st,
 	unsigned int nfrags = (sk->cleartext.len + len - 1) / len;
 
 	if (nfrags > MAX_IKE_FRAGMENTS) {
-		loglog(RC_LOG_SERIOUS, "Fragmenting this %zu byte message into %u byte chunks leads to too many frags",
-		       sk->cleartext.len, len);
-		return STF_INTERNAL_ERROR;
+		log_message(RC_LOG_SERIOUS, sk->logger,
+			    "fragmenting this %zu byte message into %u byte chunks leads to too many frags",
+			    sk->cleartext.len, len);
+		return false;
 	}
 
 	/*
@@ -972,7 +983,7 @@ static stf_status v2_record_outbound_fragments(struct state *st,
 		pb_stream pbs;
 		init_pbs(&pbs, rbody->start, pbs_offset(rbody), "sk hdr");
 		if (!in_struct(&hdr, &isakmp_hdr_desc, &pbs, NULL)) {
-			return STF_INTERNAL_ERROR;
+			return false;
 		}
 	}
 	hdr.isa_np = ISAKMP_NEXT_v2NONE; /* clear NP */
@@ -987,32 +998,35 @@ static stf_status v2_record_outbound_fragments(struct state *st,
 		pb_stream pbs = same_chunk_as_in_pbs(sk->payload, "sk");
 		struct ikev2_generic e;
 		if (!in_struct(&e, &ikev2_sk_desc, &pbs, NULL)) {
-			return STF_INTERNAL_ERROR;
+			return false;
 		}
 		skf_np = e.isag_np;
 	}
 
 	unsigned int number = 1;
 	unsigned int offset = 0;
-	struct v2_ike_tfrag **fragp = &st->st_v2_tfrags;
 
-	while (offset < sk->cleartext.len) {
-		passert(*fragp == NULL);
+	struct v2_outgoing_fragment **frag = frags;
+	while (true) {
+		passert(*frag == NULL);
 		chunk_t fragment = chunk2(sk->cleartext.ptr + offset,
 					  PMIN(sk->cleartext.len - offset, len));
-		stf_status ret = v2_record_outbound_fragment(sk->ike, &hdr, skf_np, fragp,
-							     &fragment, number, nfrags, desc);
-		if (ret != STF_OK) {
-			return ret;
+		if (!record_outbound_fragment(sk->logger, sk->ike, &hdr, skf_np, frag,
+					      &fragment, number, nfrags, desc)) {
+			return false;
 		}
+		frag = &(*frag)->next;
 
 		offset += fragment.len;
 		number++;
 		skf_np = ISAKMP_NEXT_v2NONE;
-		fragp = &(*fragp)->next;
+
+		if (offset >= sk->cleartext.len) {
+			break;
+		}
 	}
 
-	return STF_OK;
+	return true;
 }
 
 /*
@@ -1024,37 +1038,55 @@ static stf_status v2_record_outbound_fragments(struct state *st,
  * children trying to exchange messages.
  */
 
-stf_status record_outbound_v2SK_msg(struct state *msg_sa,
-				    pb_stream *msg,
-				    v2SK_payload_t *sk,
-				    const char *what)
+stf_status record_v2SK_message(pb_stream *msg,
+			       v2SK_payload_t *sk,
+			       const char *what,
+			       enum message_role message)
 {
 	size_t len = pbs_offset(msg);
+
+	/*
+	 * If we are doing NAT, so that the other end doesn't mistake
+	 * this message for ESP, each message needs a non-ESP_Marker
+	 * prefix.
+	 */
 	if (!pexpect(sk->ike->sa.st_interface != NULL) &&
-	    sk->ike->sa.st_interface->ike_float)
+	    sk->ike->sa.st_interface->esp_encapsulation_enabled)
 		len += NON_ESP_MARKER_SIZE;
 
-	stf_status ret;
 	/* IPv4 and IPv6 have different fragment sizes */
 	if (sk->ike->sa.st_interface->protocol == &ip_protocol_udp &&
+	    LIN(POLICY_IKE_FRAG_ALLOW, sk->ike->sa.st_connection->policy) &&
+	    sk->ike->sa.st_seen_fragmentation_supported &&
 	    len >= endpoint_type(&sk->ike->sa.st_remote_endpoint)->ikev2_max_fragment_size) {
-		ret = v2_record_outbound_fragments(msg_sa, msg, sk, what);
-	} else {
-		ret = encrypt_v2SK_payload(sk);
-		if (ret != STF_OK) {
-			libreswan_log("error encrypting %s message", what);
-			return ret;
+		struct v2_outgoing_fragment **frags = &sk->ike->sa.st_v2_outgoing[message];
+		if (!record_outbound_fragments(msg, sk, what, frags)) {
+			dbg("record outbound fragments failed");
+			return STF_INTERNAL_ERROR;
 		}
-		record_outbound_ike_msg(msg_sa, &reply_stream, what);
+	} else {
+		if (encrypt_v2SK_payload(sk) != STF_OK) {
+			log_message(RC_LOG, sk->logger,
+				    "error encrypting %s message", what);
+			return STF_INTERNAL_ERROR;
+		}
+		dbg("recording outgoing fragment failed");
+		record_v2_message(sk->ike, msg, what, message);
 	}
-	return ret;
+	return STF_OK;
 }
 
-struct ikev2_id build_v2_id_payload(const struct end *end, shunk_t *body)
+struct ikev2_id build_v2_id_payload(const struct end *end, shunk_t *body,
+				    const char *what, struct logger *logger)
 {
 	struct ikev2_id id_header = {
 		.isai_type = id_to_payload(&end->id, &end->host_addr, body),
 		.isai_critical = build_ikev2_critical(false),
 	};
+	if (impair.send_nonzero_reserved_id) {
+		log_message(RC_LOG, logger, "IMPAIR: setting reserved byte 3 of %s to 0x%02x",
+			    what, ISAKMP_PAYLOAD_LIBRESWAN_BOGUS);
+		id_header.isai_res3 = ISAKMP_PAYLOAD_LIBRESWAN_BOGUS;
+	}
 	return id_header;
 }

@@ -370,18 +370,7 @@ static void *pluto_crypto_helper_thread(void *arg)
 	dbg("starting up helper thread %d", w->pcw_helpernum);
 
 #ifdef HAVE_SECCOMP
-	switch (pluto_seccomp_mode) {
-	case SECCOMP_ENABLED:
-		init_seccomp_cryptohelper(SCMP_ACT_KILL);
-		break;
-	case SECCOMP_TOLERANT:
-		init_seccomp_cryptohelper(SCMP_ACT_TRAP);
-		break;
-	case SECCOMP_DISABLED:
-		break;
-	default:
-		bad_case(pluto_seccomp_mode);
-	}
+	init_seccomp_cryptohelper(w->pcw_helpernum);
 #else
 	libreswan_log("seccomp security for crypto helper not supported");
 #endif
@@ -389,9 +378,8 @@ static void *pluto_crypto_helper_thread(void *arg)
 	/* OS X does not have pthread_setschedprio */
 #if USE_PTHREAD_SETSCHEDPRIO
 	int status = pthread_setschedprio(pthread_self(), 10);
-	DBG(DBG_CONTROL,
-	    DBG_log("status value returned by setting the priority of this thread (crypto helper %d) %d",
-		    w->pcw_helpernum, status));
+	dbg("status value returned by setting the priority of this thread (crypto helper %d) %d",
+	    w->pcw_helpernum, status);
 #endif
 
 	while (true) {
@@ -518,7 +506,7 @@ static void inline_worker(struct state *unused_st UNUSED,
  */
 
 static void submit_crypto_request(struct pluto_crypto_req_cont *cn,
-				  struct logger logger,
+				  const struct logger *logger,
 				  struct state *st,
 				  struct crypto_task *task,
 				  const struct crypto_handler *handler)
@@ -552,12 +540,18 @@ static void submit_crypto_request(struct pluto_crypto_req_cont *cn,
 		 */
 		schedule_callback("inline crypto", SOS_NOBODY, inline_worker, cn);
 	} else {
-		DBG(DBG_CONTROLMORE,
-		    DBG_log("adding %s work-order %u for state #%lu",
-			    cn->pcrc_name, cn->pcrc_id,
-			    cn->pcrc_serialno));
+		dbg("adding %s work-order %u for state #%lu",
+		    cn->pcrc_name, cn->pcrc_id,
+		    cn->pcrc_serialno);
+		/*
+		 * XXX: Danger:
+		 *
+		 * Clearing retransmits here is wrong, for instance
+		 * when crypto is being run in the background.
+		 */
 		delete_event(st);
-		event_schedule_s(EVENT_CRYPTO_TIMEOUT, EVENT_CRYPTO_TIMEOUT_DELAY, st);
+		clear_retransmits(st);
+		event_schedule(EVENT_CRYPTO_TIMEOUT, EVENT_CRYPTO_TIMEOUT_DELAY, st);
 		/* add to backlog */
 		pthread_mutex_lock(&backlog_mutex);
 		{
@@ -616,16 +610,13 @@ static stf_status handle_helper_answer(struct state *st,
 {
 	struct pluto_crypto_req_cont *cn = arg;
 
-	DBG(DBG_CONTROL,
-		DBG_log("crypto helper %d replies to request ID %u",
-			cn->pcrc_helpernum, cn->pcrc_id));
+	dbg("crypto helper %d replies to request ID %u",
+	    cn->pcrc_helpernum, cn->pcrc_id);
 
 	const struct crypto_handler *h = cn->pcrc_handler;
 	passert(h != NULL);
 
-	DBG(DBG_CONTROL,
-		DBG_log("calling continuation function %p",
-			h->completed_cb));
+	dbg("calling continuation function %p", h->completed_cb);
 
 	/*
 	 * call the continuation (skip if suppressed)
@@ -633,8 +624,8 @@ static stf_status handle_helper_answer(struct state *st,
 	stf_status status;
 	if (cn->pcrc_cancelled) {
 		/* suppressed */
-		DBG(DBG_CONTROL, DBG_log("work-order %u state #%lu crypto result suppressed",
-					 cn->pcrc_id, cn->pcrc_serialno));
+		dbg("work-order %u state #%lu crypto result suppressed",
+		    cn->pcrc_id, cn->pcrc_serialno);
 		pexpect(st == NULL || st->st_offloaded_task == NULL);
 		h->cancelled_cb(&cn->pcrc_task);
 		pexpect(cn->pcrc_task == NULL); /* did your job */
@@ -837,11 +828,11 @@ void send_crypto_helper_request(struct state *st,
 	passert(cn->pcrc_pcr.pcr_type != pcr_crypto);
 	struct crypto_task *task = alloc_thing(struct crypto_task, "pcr_task");
 	task->cn = cn;
-	submit_crypto_request(cn, STATE_LOGGER(st), st,
+	submit_crypto_request(cn, st->st_logger, st,
 			      task, &pcr_handler);
 }
 
-void submit_crypto(struct logger logger,
+void submit_crypto(const struct logger *logger,
 		   struct state *st,
 		   struct crypto_task *task,
 		   const struct crypto_handler *handler,

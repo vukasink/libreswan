@@ -36,8 +36,6 @@
 #include <arpa/inet.h>
 #include <resolv.h>
 
-#include "libreswan/pfkeyv2.h"
-
 #include "sysdep.h"
 #include "constants.h"
 #include "defs.h"
@@ -85,6 +83,7 @@
 #include "chunk.h"
 #include "pending.h"
 #include "iface.h"
+#include "ikev2_delete.h"	/* for record_v2_delete(); but call is dying */
 
 /*
  * Process KE values.
@@ -119,8 +118,8 @@ void unpack_KE_from_helper(struct state *st,
 	 */
 	if (DBGP(DBG_CRYPT)) {
 		DBG_log("wire (crypto helper) group %s and state group %s %s",
-			kn->group ? kn->group->common.name : "NULL",
-			st->st_oakley.ta_dh ? st->st_oakley.ta_dh->common.name : "NULL",
+			kn->group ? kn->group->common.fqn : "NULL",
+			st->st_oakley.ta_dh ? st->st_oakley.ta_dh->common.fqn : "NULL",
 			kn->group == st->st_oakley.ta_dh ? "match" : "differ");
 	}
 
@@ -420,20 +419,23 @@ bool extract_peer_id(enum ike_id_type kind, struct id *peer, const pb_stream *id
 
 	case ID_KEY_ID:
 		peer->name = chunk2(id_pbs->cur, left);
-		DBG(DBG_PARSING,
-		    DBG_dump_hunk("KEY ID:", peer->name));
+		if (DBGP(DBG_BASE)) {
+			DBG_dump_hunk("KEY ID:", peer->name);
+		}
 		break;
 
 	case ID_DER_ASN1_DN:
 		peer->name = chunk2(id_pbs->cur, left);
-		DBG(DBG_PARSING,
-		    DBG_dump_hunk("DER ASN1 DN:", peer->name));
+		if (DBGP(DBG_BASE)) {
+		    DBG_dump_hunk("DER ASN1 DN:", peer->name);
+		}
 		break;
 
 	case ID_NULL:
 		if (left != 0) {
-			DBG(DBG_PARSING,
-				DBG_dump("unauthenticated NULL ID:", id_pbs->cur, left));
+			if (DBGP(DBG_BASE)) {
+				DBG_dump("unauthenticated NULL ID:", id_pbs->cur, left);
+			}
 		}
 		break;
 
@@ -454,7 +456,15 @@ void initialize_new_state(struct state *st,
 			  int try)
 {
 	update_state_connection(st, c);
-	set_state_ike_endpoints(st, c);
+
+	/* reset our choice of interface */
+	c->interface = NULL;
+	(void)orient(c);
+	st->st_interface = c->interface;
+	passert(st->st_interface != NULL);
+	st->st_remote_endpoint = endpoint3(c->interface->protocol,
+					   &c->spd.that.host_addr,
+					   ip_hport(c->spd.that.host_port));
 
 	st->st_policy = policy & ~POLICY_IPSEC_MASK;        /* clear bits */
 	st->st_try = try;
@@ -486,9 +496,11 @@ void send_delete(struct state *st)
 			send_v1_delete(st);
 			break;
 		case IKEv2:
-			record_v2_delete(st);
-			send_recorded_v2_ike_msg(st, "delete notification");
-			struct ike_sa *ike = ike_sa(st);
+		{
+			struct ike_sa *ike = ike_sa(st, HERE);
+			record_v2_delete(ike, st);
+			send_recorded_v2_message(ike, "delete notification",
+						 MESSAGE_REQUEST);
 			/*
 			 * XXX: The record 'n' send call shouldn't be
 			 * needed.  Instead, as part of this
@@ -506,7 +518,9 @@ void send_delete(struct state *st)
 			dbg("Message ID: IKE #%lu sender #%lu in %s hacking around record 'n' send",
 			    ike->sa.st_serialno, st->st_serialno, __func__);
 			v2_msgid_update_sent(ike, &ike->sa, NULL/*new exchange*/, MESSAGE_REQUEST);
+			st->st_dont_send_delete = true;
 			break;
+		}
 		default:
 			bad_case(st->st_ike_version);
 		}
@@ -552,7 +566,7 @@ void lswlog_child_sa_established(struct lswlog *buf, struct state *st)
 
 		if ((st->st_ike_version == IKEv2) && st->st_pfs_group != NULL)  {
 			lswlogs(buf, "-");
-			lswlogs(buf, st->st_pfs_group->common.name);
+			lswlogs(buf, st->st_pfs_group->common.fqn);
 		}
 
 		ini = " ";
@@ -618,9 +632,9 @@ void lswlog_ike_sa_established(struct lswlog *buf, struct state *st)
 
 	lswlogs(buf, " {auth=");
 	if (st->st_ike_version == IKEv2) {
-		lswlogs(buf, "IKEv2");
+		jam(buf, "IKEv2");
 	} else {
-		lswlog_enum_short(buf, &oakley_auth_names, st->st_oakley.auth);
+		jam_enum_short(buf, &oakley_auth_names, st->st_oakley.auth);
 	}
 
 	lswlogf(buf, " cipher=%s", st->st_oakley.ta_encrypt->common.fqn);

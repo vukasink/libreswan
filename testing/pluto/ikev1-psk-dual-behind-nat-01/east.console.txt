@@ -23,25 +23,25 @@ src 192.1.2.254 dst 192.1.2.23
 	replay-window 32 flag af-unspec
 	auth-trunc hmac(sha1) 0xHASHKEY 96
 	enc cbc(aes) 0xENCKEY
-	encap type espinudp sport EPHEMERAL dport 4500 addr 0.0.0.0
+	encap type espinudp sport EPHEM dport 4500 addr 0.0.0.0
 src 192.1.2.23 dst 192.1.2.254
 	proto esp spi 0xSPISPI reqid REQID mode tunnel
 	replay-window 32 flag af-unspec
 	auth-trunc hmac(sha1) 0xHASHKEY 96
 	enc cbc(aes) 0xENCKEY
-	encap type espinudp sport 4500 dport EPHEMERAL addr 0.0.0.0
+	encap type espinudp sport 4500 dport EPHEM addr 0.0.0.0
 src 192.1.2.254 dst 192.1.2.23
 	proto esp spi 0xSPISPI reqid REQID mode tunnel
 	replay-window 32 flag af-unspec
 	auth-trunc hmac(sha1) 0xHASHKEY 96
 	enc cbc(aes) 0xENCKEY
-	encap type espinudp sport EPHEMERAL dport 4500 addr 0.0.0.0
+	encap type espinudp sport EPHEM dport 4500 addr 0.0.0.0
 src 192.1.2.23 dst 192.1.2.254
 	proto esp spi 0xSPISPI reqid REQID mode tunnel
 	replay-window 32 flag af-unspec
 	auth-trunc hmac(sha1) 0xHASHKEY 96
 	enc cbc(aes) 0xENCKEY
-	encap type espinudp sport 4500 dport EPHEMERAL addr 0.0.0.0
+	encap type espinudp sport 4500 dport EPHEM addr 0.0.0.0
 XFRM policy:
 src 0.0.0.0/0 dst 192.0.2.101/32
 	dir out priority 2097087 ptype main
@@ -100,8 +100,8 @@ PING 192.0.2.102 (192.0.2.102) 56(84) bytes of data.
 rtt min/avg/max/mdev = 0.XXX/0.XXX/0.XXX/0.XXX ms
 east #
  ipsec whack --trafficstatus
-006 #2: "east-any"[2] 192.1.2.254, username=use1, type=ESP, add_time=1234567890, inBytes=504, outBytes=504, lease=192.0.2.101/32
-006 #4: "east-any"[3] 192.1.2.254, username=xroad, type=ESP, add_time=1234567890, inBytes=504, outBytes=504, lease=192.0.2.102/32
+006 #2: "east-any"[2] 192.1.2.254, username=use1, type=ESP, add_time=1234567890, inBytes=252, outBytes=252, lease=192.0.2.101/32
+006 #4: "east-any"[3] 192.1.2.254, username=xroad, type=ESP, add_time=1234567890, inBytes=252, outBytes=252, lease=192.0.2.102/32
 east #
  ../bin/check-for-core.sh
 east #

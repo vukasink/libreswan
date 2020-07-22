@@ -61,15 +61,13 @@ void retransmit_v1_msg(struct state *st)
 	set_cur_state(st);
 
 	/* Paul: this line can say attempt 3 of 2 because the cleanup happens when over the maximum */
-	DBG(DBG_CONTROL|DBG_RETRANSMITS, {
-		ipstr_buf b;
-		char cib[CONN_INST_BUF];
-		DBG_log("handling event EVENT_RETRANSMIT for %s \"%s\"%s #%lu keying attempt %lu of %lu; retransmit %lu",
-			ipstr(&c->spd.that.host_addr, &b),
-			c->name, fmt_conn_instance(c, cib),
-			st->st_serialno, try, try_limit,
-			retransmit_count(st) + 1);
-	});
+	address_buf b;
+	connection_buf cib;
+	dbg("handling event EVENT_RETRANSMIT for %s "PRI_CONNECTION" #%lu keying attempt %lu of %lu; retransmit %lu",
+	    str_address(&c->spd.that.host_addr, &b),
+	    pri_connection(c, &cib),
+	    st->st_serialno, try, try_limit,
+	    retransmit_count(st) + 1);
 
 	switch (retransmit(st)) {
 	case RETRANSMIT_YES:
@@ -133,34 +131,36 @@ void retransmit_v1_msg(struct state *st)
 
 void retransmit_v2_msg(struct state *st)
 {
-	struct connection *c;
-	unsigned long try;
-	unsigned long try_limit;
-	struct state *pst = IS_CHILD_SA(st) ? state_with_serialno(st->st_clonedfrom) : st;
-
 	passert(st != NULL);
-	passert(IS_IKE_SA(pst));
+	struct ike_sa *ike = ike_sa(st, HERE);
+	if (ike == NULL) {
+		dbg("no ike sa so going away");
+		delete_state(st);
+	}
 
 	set_cur_state(st);
-	c = st->st_connection;
-	try_limit = c->sa_keying_tries;
-	try = st->st_try + 1;
+	struct connection *c = st->st_connection;
+	unsigned long try_limit = c->sa_keying_tries;
+	unsigned long try = st->st_try + 1;
 
-	/* Paul: this line can stay attempt 3 of 2 because the cleanup happens when over the maximum */
-	DBG(DBG_CONTROL|DBG_RETRANSMITS, {
+	/*
+	 * Paul: this line can stay attempt 3 of 2 because the cleanup
+	 * happens when over the maximum
+	 */
+	if (DBGP(DBG_BASE)) {
 		ipstr_buf b;
-		char cib[CONN_INST_BUF];
-		DBG_log("handling event EVENT_RETRANSMIT for %s \"%s\"%s #%lu attempt %lu of %lu",
+		connection_buf cib;
+		DBG_log("handling event EVENT_RETRANSMIT for %s "PRI_CONNECTION" #%lu attempt %lu of %lu",
 			ipstr(&c->spd.that.host_addr, &b),
-			c->name, fmt_conn_instance(c, cib),
+			pri_connection(c, &cib),
 			st->st_serialno, try, try_limit);
-		DBG_log("and parent for %s \"%s\"%s #%lu keying attempt %lu of %lu; retransmit %lu",
+		DBG_log("and parent for %s "PRI_CONNECTION" #%lu keying attempt %lu of %lu; retransmit %lu",
 			ipstr(&c->spd.that.host_addr, &b),
-			c->name, fmt_conn_instance(c, cib),
-			pst->st_serialno,
-			pst->st_try, try_limit,
-			retransmit_count(pst) + 1);
-		});
+			pri_connection(c, &cib),
+			ike->sa.st_serialno,
+			ike->sa.st_try, try_limit,
+			retransmit_count(&ike->sa) + 1);
+	}
 
 	/*
 	 * if this connection has a newer Child SA than this state
@@ -168,15 +168,23 @@ void retransmit_v2_msg(struct state *st)
 	 * cover if there are multiple CREATE_CHILD_SA pending on this
 	 * IKE negotiation ???
 	 *
-	 * XXX: this is testing for an IKE SA that's been superseed by
-	 * a newer IKE SA (not child).  Suspect this is to handle a
-	 * race where the other end brings up the IKE SA first?  For
-	 * that case, shouldn't this state have been deleted?
+	 * XXX: Suspect this is to handle a race where the other end
+	 * brings up the connection first?  For that case, shouldn't
+	 * this state have been deleted?
 	 */
-	if (st->st_state->kind != STATE_PARENT_I1 &&
-	    c->newest_ipsec_sa > st->st_serialno) {
-		libreswan_log("suppressing retransmit because superseded by #%lu try=%lu. Drop this negotiation",
-				c->newest_ipsec_sa, st->st_try);
+	if (st->st_establishing_sa == IKE_SA &&
+	    c->newest_isakmp_sa > st->st_serialno) {
+		log_state(RC_LOG, st,
+			  "suppressing retransmit because IKE SA was superseded #%lu try=%lu; drop this negotiation",
+			  c->newest_isakmp_sa, st->st_try);
+		pstat_sa_failed(st, REASON_TOO_MANY_RETRANSMITS);
+		delete_state(st);
+		return;
+	} else if (st->st_establishing_sa == IPSEC_SA &&
+		   c->newest_ipsec_sa > st->st_serialno) {
+		log_state(RC_LOG, st,
+			  "suppressing retransmit because CHILD SA was superseded by #%lu try=%lu; drop this negotiation",
+			  c->newest_ipsec_sa, st->st_try);
 		pstat_sa_failed(st, REASON_TOO_MANY_RETRANSMITS);
 		delete_state(st);
 		return;
@@ -184,22 +192,34 @@ void retransmit_v2_msg(struct state *st)
 
 	switch (retransmit(st)) {
 	case RETRANSMIT_YES:
-		send_recorded_v2_ike_msg(pst, "EVENT_RETRANSMIT");
+		send_recorded_v2_message(ike, "EVENT_RETRANSMIT",
+					 MESSAGE_REQUEST);
 		return;
 	case RETRANSMIT_NO:
 		return;
 	case RETRANSMITS_TIMED_OUT:
 		break;
 	case DELETE_ON_RETRANSMIT:
-		/* disable re-key code */
+		/* disable revival code */
 		try = 0;
 		break;
 	}
 
 	/*
-	 * Current state is dead and will be deleted at the end of the
-	 * function.
+	 * The entire family is dead dead head
 	 */
+	if (IS_IKE_SA_ESTABLISHED(&ike->sa)) {
+		/*
+		 * Since the IKE SA is established, mimic the
+		 * (probably wrong) behaviour of the old liveness code
+		 * path - it needs to revive all the connections under
+		 * the IKE SA and not just this one child(?).
+		 */
+		/* already logged */
+		liveness_action(st->st_connection, st->st_ike_version);
+		/* presumably liveness_action() deletes the state? */
+		return;
+	}
 
 	if (try != 0 && (try <= try_limit || try_limit == 0)) {
 		/*
@@ -229,19 +249,16 @@ void retransmit_v2_msg(struct state *st)
 
 		ipsecdoi_replace(st, try);
 	} else {
-		DBG(DBG_CONTROL|DBG_RETRANSMITS,
-		    DBG_log("maximum number of keyingtries reached - deleting state"));
+		dbg("maximum number of keyingtries reached - deleting state");
 	}
 
-
-	if (pst != st) {
-		set_cur_state(pst);  /* now we are on pst */
-		if (pst->st_state->kind == STATE_PARENT_I2) {
-			pstat_sa_failed(pst, REASON_TOO_MANY_RETRANSMITS);
-			delete_state(pst);
+	if (&ike->sa != st) {
+		set_cur_state(&ike->sa);  /* now we are on pst */
+		if (ike->sa.st_state->kind == STATE_PARENT_I2) {
+			pstat_sa_failed(&ike->sa, REASON_TOO_MANY_RETRANSMITS);
+			delete_state(&ike->sa);
 		} else {
-			release_fragments(st);
-			free_chunk_content(&st->st_tpacket);
+			free_v2_message_queues(st);
 		}
 	}
 

@@ -84,6 +84,13 @@ connection</replaceable></arg>
     <arg choice='opt'>--purgeocsp </arg>
 
 </cmdsynopsis>
+<cmdsynopsis>
+  <command>ipsec</command>
+    <arg choice='plain'><replaceable>auto</replaceable></arg>
+    <arg choice='opt'>--utc </arg>
+    <arg choice='opt'>--rereadcerts</arg>
+    <arg choice='plain'><replaceable>connection</replaceable></arg>
+</cmdsynopsis>
 </refsect1>
 <refsect1 id='description'><title>DESCRIPTION</title>
 <para><emphasis remap='I'>Auto</emphasis>
@@ -103,8 +110,7 @@ is
 <option>--down</option>,
 <option>--route</option>,
 <option>--unroute</option>,
-or
-<option>--ondemand</option>.
+<option>--ondemand</option>,
 The
 <option>--ready</option>,
 <option>--rereadsecrets</option>,

@@ -47,6 +47,11 @@ int main(int argc, char *argv[])
 	ip_subnet_check();
 	ip_said_check();
 	ip_info_check();
+	ip_protoport_check();
+	ip_selector_check();
+	ip_sockaddr_check();
+	ip_port_check();
+	ip_port_range_check();
 
 	if (fails > 0) {
 		fprintf(stderr, "TOTAL FAILURES: %d\n", fails);

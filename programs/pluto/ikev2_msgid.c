@@ -57,6 +57,12 @@ static void jam_ike_window(jambuf_t *buf, const char *what,
 	if (new != NULL && old->recv != new->recv) {
 		jam(buf, "->%jd", new->recv);
 	}
+	monotime_buf mb;
+	jam(buf, " ike.%s.last_contact=%s", what,
+	    str_monotime(old->last_contact, &mb));
+	if (new != NULL && !monotime_eq(old->last_contact, new->last_contact)) {
+		jam(buf, "->%s", str_monotime(new->last_contact, &mb));
+	}
 }
 
 static void jam_ike_windows(jambuf_t *buf,
@@ -123,7 +129,7 @@ void fail_v2_msgid(where_t where, struct ike_sa *ike, struct state *wip_sa,
  * Dump the MSGIDs along with any changes.
  *
  * Why not just dump the one that changed in the calling function?
- * Because MSGIDs have this strange habbit of mysteriously changing
+ * Because MSGIDs have this strange habit of mysteriously changing
  * between calls.
  */
 
@@ -179,8 +185,11 @@ static const struct v2_msgid_wip empty_v2_msgid_wip = {
 
 void v2_msgid_init_ike(struct ike_sa *ike)
 {
+	monotime_t now = mononow();
 	struct v2_msgid_windows old_windows = ike->sa.st_v2_msgid_windows;
 	ike->sa.st_v2_msgid_windows = empty_v2_msgid_windows;
+	ike->sa.st_v2_msgid_windows.initiator.last_contact = now;
+	ike->sa.st_v2_msgid_windows.responder.last_contact = now;
 	struct v2_msgid_wip old_wip = ike->sa.st_v2_msgid_wip;
 	ike->sa.st_v2_msgid_wip = empty_v2_msgid_wip;
 	/* pretend there's a sender */
@@ -230,42 +239,84 @@ void v2_msgid_start_responder(struct ike_sa *ike, struct state *responder,
  * message?
  */
 
-void v2_msgid_switch_responder(struct ike_sa *ike, struct child_sa *child,
-			       const struct msg_digest *md)
+void v2_msgid_switch_responder_to_child(struct ike_sa *ike, struct child_sa *child,
+					struct msg_digest *md, where_t where)
 {
 	enum message_role role = v2_msg_role(md);
 	if (!pexpect(role == MESSAGE_REQUEST)) {
 		return;
 	}
-	intmax_t msgid = md->hdr.isa_msgid;
+	intmax_t md_msgid = md->hdr.isa_msgid;
 	/* out with the old */
 	{
-		const struct v2_msgid_wip wip = ike->sa.st_v2_msgid_wip;
-		if (DBGP(DBG_BASE) &&
-		    ike->sa.st_v2_msgid_wip.responder != msgid) {
-			FAIL_V2_MSGID(ike, &child->sa,
-				      "ike->sa.st_v2_msgid_wip.responder == %jd(msgid); was %jd",
-				      msgid, ike->sa.st_v2_msgid_wip.responder);
+		const struct v2_msgid_wip ike_wip = ike->sa.st_v2_msgid_wip;
+		if (DBGP(DBG_BASE) && ike_wip.responder != md_msgid) {
+			fail_v2_msgid(where, ike, &child->sa,
+				      "ike->sa.st_v2_msgid_wip.responder should be %jd (md's msgid); was %jd",
+				      md_msgid, ike_wip.responder);
 		}
 		ike->sa.st_v2_msgid_wip.responder = -1;
-		dbg_msgids_update("switching from IKE SA responder", role, msgid,
+		dbg_msgids_update("switching from IKE SA responder", role, md_msgid,
 				  ike, &ike->sa.st_v2_msgid_windows,
-				  &ike->sa, &wip);
+				  &ike->sa, &ike_wip);
 	}
 	/* in with the new */
 	{
-		const struct v2_msgid_wip wip = child->sa.st_v2_msgid_wip;
-		if (DBGP(DBG_BASE) &&
-		    child->sa.st_v2_msgid_wip.responder != -1) {
-			FAIL_V2_MSGID(ike, &child->sa,
-				      "child->sa.st_v2_msgid_wip.responder == -1; was %jd",
-				      child->sa.st_v2_msgid_wip.responder);
+		const struct v2_msgid_wip child_wip = child->sa.st_v2_msgid_wip;
+		if (DBGP(DBG_BASE) && child_wip.responder != -1) {
+			fail_v2_msgid(where, ike, &child->sa,
+				      "child->sa.st_v2_msgid_wip.responder should be -1; was %jd",
+				      child_wip.responder);
 		}
-		child->sa.st_v2_msgid_wip.responder = msgid;
-		dbg_msgids_update("switching to CHILD SA responder", role, msgid,
+		child->sa.st_v2_msgid_wip.responder = md_msgid;
+		dbg_msgids_update("switching to CHILD SA responder", role, md_msgid,
 				  ike, &ike->sa.st_v2_msgid_windows,
-				  &child->sa, &wip);
+				  &child->sa, &child_wip);
 	}
+	/* and don't forget MD.ST */
+	switch_md_st(md, &child->sa, where);
+}
+
+void v2_msgid_switch_responder_from_aborted_child(struct ike_sa *ike, struct child_sa **childp,
+						  struct msg_digest *md, where_t where)
+{
+	struct child_sa *child = *childp;
+	enum message_role role = v2_msg_role(md);
+	if (!pexpect(role == MESSAGE_REQUEST)) {
+		return;
+	}
+	intmax_t md_msgid = md->hdr.isa_msgid;
+	/* out with the old */
+	{
+		const struct v2_msgid_wip child_wip = child->sa.st_v2_msgid_wip;
+		if (DBGP(DBG_BASE) && child_wip.responder != md_msgid) {
+			fail_v2_msgid(where, ike, &child->sa,
+				      "child->sa.st_v2_msgid_wip.responder should be %jd (MD's msgid); was %jd",
+				      md_msgid, child_wip.responder);
+		}
+		child->sa.st_v2_msgid_wip.responder = -1;
+		dbg_msgids_update("switching from CHILD SA responder", role, md_msgid,
+				  ike, &ike->sa.st_v2_msgid_windows,
+				  &child->sa, &child_wip);
+	}
+	/* in with the new */
+	{
+		const struct v2_msgid_wip ike_wip = ike->sa.st_v2_msgid_wip;
+		if (DBGP(DBG_BASE) && ike_wip.responder != -1) {
+			fail_v2_msgid(where, ike, &child->sa,
+				      "ike->sa.st_v2_msgid_wip.responder should be -1; was %jd",
+				      ike_wip.responder);
+		}
+		ike->sa.st_v2_msgid_wip.responder = md_msgid;
+		dbg_msgids_update("switching to IKE SA responder", role, md_msgid,
+				  ike, &ike->sa.st_v2_msgid_windows,
+				  &ike->sa, &ike_wip);
+	}
+	/* and don't forget MD.ST */
+	switch_md_st(md, &ike->sa, where);
+	child->sa.st_dont_send_delete = true; /* just to be sure */
+	delete_state(&child->sa);
+	*childp = NULL;
 }
 
 void v2_msgid_switch_initiator(struct ike_sa *ike, struct child_sa *child,
@@ -339,6 +390,7 @@ void v2_msgid_update_recv(struct ike_sa *ike, struct state *receiver,
 	/* save old value, and add shortcut to new */
 	const struct v2_msgid_windows old = ike->sa.st_v2_msgid_windows;
 	struct v2_msgid_windows *new = &ike->sa.st_v2_msgid_windows;
+	monotime_t time_received = mononow(); /* not strictly correct */
 
 	/*
 	 * If the receiver is known, save a copy of the old values.
@@ -378,6 +430,7 @@ void v2_msgid_update_recv(struct ike_sa *ike, struct state *receiver,
 		}
 		/* last request we received */
 		new->responder.recv = msgid;
+		new->responder.last_contact = time_received;
 		break;
 	case MESSAGE_RESPONSE:
 		update_received_story = "updating initiator received";
@@ -416,6 +469,21 @@ void v2_msgid_update_recv(struct ike_sa *ike, struct state *receiver,
 			}
 			/* this is what matters */
 			pexpect(receiver->st_v2_msgid_wip.initiator != msgid);
+			/*
+			 * clear the retransmits for the old message
+			 *
+			 * XXX: Because the IKE_AUTH initiator
+			 * switches states from IKE->CHILD part way
+			 * through, this code can end up clearing the
+			 * child's retransmits when what is needed is
+			 * to clear the IKE SA's retransmits.
+			 */
+			if (receiver->st_retransmit_event != NULL) {
+				dbg_v2_msgid(ike, receiver, "clearing EVENT_RETRANSMIT as response received");
+				clear_retransmits(receiver);
+			} else {
+				dbg_v2_msgid(ike, receiver, "XXX: no EVENT_RETRANSMIT to clear; suspect IKE->CHILD switch");
+			}
 		} else {
 			/*
 			 * For instance, the IKE_AUTH response is
@@ -431,6 +499,7 @@ void v2_msgid_update_recv(struct ike_sa *ike, struct state *receiver,
 		}
 		/* last response we received */
 		new->initiator.recv = msgid;
+		new->initiator.last_contact = time_received;
 		break;
 	case NO_MESSAGE:
 		dbg("Message ID: IKE #%lu skipping update_recv as MD is fake",
@@ -482,6 +551,12 @@ void v2_msgid_update_sent(struct ike_sa *ike, struct state *sender,
 				     old_sender.initiator);
 		}
 #endif
+		if (sender->st_retransmit_event == NULL) {
+			dbg_v2_msgid(ike, sender, "scheduling EVENT_RETRANSMIT");
+			start_retransmits(sender);
+		} else {
+			dbg_v2_msgid(ike, sender, "XXX: EVENT_RETRANSMIT already scheduled -- suspect record'n'send");
+		}
 		break;
 	case MESSAGE_RESPONSE:
 		update_sent_story = "updating responder sent";
@@ -510,6 +585,14 @@ void v2_msgid_update_sent(struct ike_sa *ike, struct state *sender,
 			  ike, &old, sender, &old_sender);
 }
 
+struct v2_msgid_pending {
+	so_serial_t st_serialno;
+	const enum isakmp_xchg_types ix;
+	v2_msgid_pending_cb *cb;
+	const struct state_v2_microcode *transition;
+	struct v2_msgid_pending *next;
+};
+
 void v2_msgid_free(struct state *st)
 {
 	/* find the end; small list? */
@@ -521,8 +604,22 @@ void v2_msgid_free(struct state *st)
 	}
 }
 
+bool v2_msgid_request_outstanding(struct ike_sa *ike)
+{
+	struct v2_msgid_window *initiator = &ike->sa.st_v2_msgid_windows.initiator;
+	intmax_t unack = (initiator->sent - initiator->recv);
+	return (unack != 0); /* well >0  */
+}
+
+bool v2_msgid_request_pending(struct ike_sa *ike)
+{
+	struct v2_msgid_window *initiator = &ike->sa.st_v2_msgid_windows.initiator;
+	return initiator->pending != NULL;
+}
+
 void v2_msgid_queue_initiator(struct ike_sa *ike, struct state *st,
 			      enum isakmp_xchg_types ix,
+			      const struct state_v2_microcode *transition,
 			      v2_msgid_pending_cb *callback)
 {
 	struct v2_msgid_window *initiator = &ike->sa.st_v2_msgid_windows.initiator;
@@ -530,8 +627,6 @@ void v2_msgid_queue_initiator(struct ike_sa *ike, struct state *st,
 	 * v2_CREATE_CHILD_SA append to last the task.
 	 * v2_INFORMATIONAL v2D append to the last v2D task.
 	 */
-	delete_event(st);
-	event_schedule_s(EVENT_SA_REPLACE, MAXIMUM_RESPONDER_WAIT, st);
 	/* find the end; small list? */
 	struct v2_msgid_pending **pp = &initiator->pending;
 	while (*pp != NULL) {
@@ -546,6 +641,7 @@ void v2_msgid_queue_initiator(struct ike_sa *ike, struct state *st,
 		.st_serialno = st->st_serialno,
 		.ix = ix,
 		.cb = callback,
+		.transition = transition,
 		.next = (*pp),
 	};
 	*pp = clone_thing(new, "struct initiate_list");
@@ -577,8 +673,25 @@ static void initiate_next(struct state *st, void *context UNUSED)
 		}
 		dbg_v2_msgid(ike, st, "resuming SA using IKE SA (unack %jd)", unack);
 		so_serial_t old_state = push_cur_state(st);
+		struct child_sa *child = IS_CHILD_SA(st) ? pexpect_child_sa(st) : NULL;
 
-		if (IS_CHILD_SA_ESTABLISHED(st)) {
+		if (pending.transition != NULL) {
+			/*
+			 * try to check that the transition still applies ...
+			 */
+#if 0
+			passert(pending.transition->state == st->st_state->kind);
+#endif
+			if (!IS_IKE_SA_ESTABLISHED(&ike->sa) ||
+			    (child != NULL && !IS_CHILD_SA_ESTABLISHED(&child->sa))) {
+				log_state(RC_LOG, st, "dropping transition: %s",
+					  pending.transition->story);
+			} else {
+				set_v2_transition(st, pending.transition, HERE);
+				stf_status status = pending.transition->processor(ike, child, NULL);
+				complete_v2_state_transition(st, NULL/*initiate so no md*/, status);
+			}
+		} else if (IS_CHILD_SA_ESTABLISHED(st)) {
 			/*
 			 * this is a continuation of delete message.
 			 * shortcut complete_v2_state_transition()
@@ -604,7 +717,7 @@ void v2_msgid_schedule_next_initiator(struct ike_sa *ike)
 	 */
 	if (initiator->pending != NULL) {
 		intmax_t unack = (initiator->sent - initiator->recv);
-		/* if this returns NULL, thats ok; will log "LOST" */
+		/* if this returns NULL, that's ok; will log "LOST" */
 		struct state *wip_sa = state_by_serialno(initiator->pending->st_serialno);
 		if (unack < ike->sa.st_connection->ike_window) {
 			dbg_v2_msgid(ike, wip_sa, "wakeing IKE SA for next initiator (unack %jd)", unack);

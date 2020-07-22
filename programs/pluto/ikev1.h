@@ -41,10 +41,11 @@ extern bool ikev1_justship_nonce(chunk_t *n, pb_stream *outs,
 extern bool ikev1_ship_nonce(chunk_t *n, struct pluto_crypto_req *r,
 			     pb_stream *outs, const char *name);
 
-extern notification_t accept_v1_nonce(struct msg_digest *md, chunk_t *dest,
+extern notification_t accept_v1_nonce(struct logger *logger,
+				      struct msg_digest *md, chunk_t *dest,
 				      const char *name);
 
-extern bool ikev1_justship_KE(chunk_t *g, pb_stream *outs);
+extern bool ikev1_justship_KE(struct logger *logger, chunk_t *g, pb_stream *outs);
 
 /* just calls previous two routines now */
 extern bool ikev1_ship_KE(struct state *st, struct pluto_crypto_req *r,
@@ -81,7 +82,8 @@ extern bool ikev1_decode_peer_id(struct msg_digest *md, bool initiator,
 			   bool aggrmode);
 
 struct hash_signature v1_sign_hash_RSA(const struct connection *c,
-				       const struct crypt_mac *hash);
+				       const struct crypt_mac *hash,
+				       struct logger *logger);
 
 struct crypt_mac main_mode_hash(struct state *st, enum sa_role role,
 				const pb_stream *idpl);  /* ID payload, as PBS; cur must be at end */

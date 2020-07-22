@@ -16,11 +16,11 @@ ipsec auto --add road-eastnet-nonat
 road #
 ipsec auto --status
 000 using kernel interface: netkey
+000  
 000 interface lo 127.0.0.1:4500
 000 interface lo 127.0.0.1:500
 000 interface eth0 192.1.3.209:4500
 000 interface eth0 192.1.3.209:500
-000  
 000  
 000 fips mode=disabled;
 000 SElinux=XXXXX
@@ -31,7 +31,7 @@ ipsec auto --status
 000 configdir=/etc, configfile=/etc/ipsec.conf, secrets=/etc/ipsec.secrets, ipsecdir=/etc/ipsec.d, nssdir=/etc/ipsec.d, dumpdir=/var/tmp, statsbin=unset
 000 sbindir=PATH/sbin, libexecdir=PATH/libexec/ipsec
 000 nhelpers=-1, uniqueids=yes, perpeerlog=no, logappend=no, logip=yes, shuntlifetime=900s, xfrmlifetime=30s
-000 ddos-cookies-threshold=50000, ddos-max-halfopen=25000, ddos-mode=auto
+000 ddos-cookies-threshold=25000, ddos-max-halfopen=50000, ddos-mode=auto
 000 ikeport=500, ikebuf=0, msg_errqueue=yes, strictcrlpolicy=no, crlcheckinterval=0, listen=<any>, nflog-all=0
 000 global-redirect=no, global-redirect-to=<unset>
 000 secctx-attr-type=XXXX
@@ -104,7 +104,7 @@ ipsec auto --status
 000 "road-eastnet-nonat":   conn_prio: 32,24; interface: eth0; metric: 0; mtu: unset; sa_prio:auto; sa_tfc:none;
 000 "road-eastnet-nonat":   nflog-group: unset; mark: unset; vti-iface:unset; vti-routing:no; vti-shared:no; nic-offload:auto;
 000 "road-eastnet-nonat":   dpd: action:hold; delay:0; timeout:0; nat-t: encaps:auto; nat_keepalive:yes; ikev1_natt:both
-000 "road-eastnet-nonat":   newest ISAKMP SA: #0; newest IPsec SA: #0;
+000 "road-eastnet-nonat":   newest ISAKMP SA: #0; newest IPsec SA: #0; conn serial: $1;
 000  
 000 Total IPsec connections: loaded 1, active 0
 000  
@@ -124,7 +124,7 @@ ipsec auto --up road-eastnet-nonat
 1v2 "road-eastnet-nonat" #1: STATE_PARENT_I2: sent v2I2, expected v2R2 {auth=IKEv2 cipher=aes_gcm_16_256 integ=n/a prf=sha2_512 group=MODP2048}
 002 "road-eastnet-nonat" #2: IKEv2 mode peer ID is ID_FQDN: '@east'
 002 "road-eastnet-nonat" #2: negotiated connection [192.0.2.219-192.0.2.219:0-65535 0] -> [192.0.2.0-192.0.2.255:0-65535 0]
-004 "road-eastnet-nonat" #2: STATE_PARENT_I3: PARENT SA established tunnel mode {ESP=>0xESPESP<0xESPESP xfrm=AES_128-HMAC_SHA1 NATOA=none NATD=none DPD=passive}
+004 "road-eastnet-nonat" #2: STATE_V2_ESTABLISHED_IKE_SA: established IKE SA tunnel mode {ESP=>0xESPESP<0xESPESP xfrm=AES_128-HMAC_SHA1 NATOA=none NATD=none DPD=passive}
 road #
 ping -n -c 4 -I 192.0.2.219  192.0.2.254
 PING 192.0.2.254 (192.0.2.254) from 192.0.2.219 : 56(84) bytes of data.

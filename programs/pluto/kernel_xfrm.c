@@ -56,7 +56,7 @@
 #include <unistd.h>
 #include <sys/stat.h>
 
-#include "kameipsec.h"
+#include "kernel_xfrm_kameipsec.h"
 #include <linux/rtnetlink.h>
 #include <linux/if_addr.h>
 #include <linux/if_link.h>
@@ -79,7 +79,6 @@
 #include "connections.h"
 #include "kernel.h"
 #include "server.h"
-#include "iface_udp.h"
 #include "nat_traversal.h"
 #include "state.h"
 #include "kernel_xfrm.h"
@@ -95,6 +94,7 @@
 # include "kernel_xfrm_interface.h"
 #include "iface.h"
 #include "ip_selector.h"
+#include "ip_encap.h"
 
 /* required for Linux 2.6.26 kernel and later */
 #ifndef XFRM_STATE_AF_UNSPEC
@@ -173,7 +173,7 @@ static void xfrm2ip(const xfrm_address_t *xaddr, ip_address *addr, const sa_fami
 	const struct ip_info *afi = aftoinfo(family);
 	passert(afi != NULL);
 
-	*addr = afi->any_address; /* initalize dst type and zero */
+	*addr = afi->any_address; /* initialize dst type and zero */
 	chunk_t a = address_as_chunk(addr);
 
 	/* a = x */
@@ -182,23 +182,30 @@ static void xfrm2ip(const xfrm_address_t *xaddr, ip_address *addr, const sa_fami
 }
 
 /*
- * ip2xfrm - Take an IP address and convert to an xfrm.
- *
- * @param addr ip_address
- * @param xaddr xfrm_address_t - IPv[46] Address from addr is copied here.
+ * xfrm_from-address - Take an IP address and convert to an xfrm.
  */
-static void ip2xfrm(const ip_address *addr, xfrm_address_t *xaddr)
+static xfrm_address_t xfrm_from_address(const ip_address *addr)
 {
+	xfrm_address_t xaddr;
+	zero(&xaddr);
+
 	shunk_t a = address_as_shunk(addr);
-
 	/* .len == ipv6 len */
-	chunk_t x = THING_AS_CHUNK(*xaddr);
-
+	chunk_t x = THING_AS_CHUNK(xaddr);
 	/* x = a */
 	passert(x.len >= a.len);
-	zero(xaddr);
 	memcpy(x.ptr, a.ptr, a.len);
+	return xaddr;
 }
+
+#define SELECTOR_TO_XFRM(CLIENT, REQ, L)				\
+	{								\
+		ip_selector client_ = *(CLIENT);			\
+		ip_address address = selector_prefix(&client_);		\
+		(REQ).L##addr = xfrm_from_address(&address);		\
+		(REQ).prefixlen_##L = selector_maskbits(&client_);	\
+		(REQ).L##port = nport(selector_port(&client_));		\
+	}
 
 static void init_netlink_route_fd(void)
 {
@@ -381,18 +388,14 @@ static bool send_netlink_msg(struct nlmsghdr *hdr,
 			continue;
 		} else if (addr.nl_pid != 0) {
 			/* not for us: ignore */
-			DBG(DBG_KERNEL,
-				DBG_log("netlink: ignoring %s message from process %u",
-					sparse_val_show(xfrm_type_names,
-							rsp.n.nlmsg_type),
-					addr.nl_pid));
+			dbg("netlink: ignoring %s message from process %u",
+			    sparse_val_show(xfrm_type_names, rsp.n.nlmsg_type),
+			    addr.nl_pid);
 			continue;
 		} else if (rsp.n.nlmsg_seq != seq) {
-			DBG(DBG_KERNEL,
-				DBG_log("netlink: ignoring out of sequence (%u/%u) message %s",
-					rsp.n.nlmsg_seq, seq,
-					sparse_val_show(xfrm_type_names,
-							rsp.n.nlmsg_type)));
+			dbg("netlink: ignoring out of sequence (%u/%u) message %s",
+			    rsp.n.nlmsg_seq, seq,
+			    sparse_val_show(xfrm_type_names, rsp.n.nlmsg_type));
 			continue;
 		}
 		break;
@@ -421,9 +424,8 @@ static bool send_netlink_msg(struct nlmsghdr *hdr,
 		 * we'll let it pass.
 		 * This really happens for netlink_add_sa().
 		 */
-		DBG(DBG_KERNEL,
-			DBG_log("netlink response for %s %s included non-error error",
-				description, text_said));
+		dbg("netlink response for %s %s included non-error error",
+		    description, text_said);
 		/* ignore */
 	}
 	if (rbuf == NULL) {
@@ -538,7 +540,7 @@ static bool netlink_raw_eroute(const ip_address *this_host,
 		/* shunt route */
 		switch (ntohl(new_spi)) {
 		case SPI_PASS:
-			DBG(DBG_KERNEL, DBG_log("netlink_raw_eroute: SPI_PASS"));
+			dbg("netlink_raw_eroute: SPI_PASS");
 			policy = IPSEC_POLICY_NONE;
 			break;
 		case SPI_HOLD:
@@ -550,7 +552,7 @@ static bool netlink_raw_eroute(const ip_address *this_host,
 			 * After expiration, the underlying policy causing the original acquire
 			 * will fire again, dropping further packets.
 			 */
-			DBG(DBG_KERNEL, DBG_log("netlink_raw_eroute: SPI_HOLD implemented as no-op"));
+			dbg("netlink_raw_eroute: SPI_HOLD implemented as no-op");
 			return TRUE; /* yes really */
 		case SPI_DROP:
 		case SPI_REJECT:
@@ -582,7 +584,7 @@ static bool netlink_raw_eroute(const ip_address *this_host,
 	 * so eroute must be done to natted, visible ip. If we don't hide
 	 * internal IP, communication doesn't work.
 	 */
-	ip_subnet local_client;
+	ip_selector local_client;
 
 	if (esatype == ET_ESP || esatype == ET_IPCOMP || sa_proto == &ip_protocol_esp) {
 		/*
@@ -593,17 +595,15 @@ static bool netlink_raw_eroute(const ip_address *this_host,
 
 		if (dir == XFRM_POLICY_OUT) {
 			local_port = portof(&that_client->addr);
-			addrtosubnet(that_host, &local_client);
+			local_client = subnet_from_address(that_host);
 			that_client = &local_client;
 		} else {
 			local_port = portof(&this_client->addr);
-			addrtosubnet(this_host, &local_client);
+			local_client = subnet_from_address(this_host);
 			this_client = &local_client;
 		}
 		setportof(local_port, &local_client.addr);
-		DBG(DBG_KERNEL,
-			DBG_log("%s: using host address instead of client subnet",
-				__func__));
+		dbg("%s: using host address instead of client subnet", __func__);
 	}
 
 	zero(&req);
@@ -611,10 +611,13 @@ static bool netlink_raw_eroute(const ip_address *this_host,
 
 	const int family = subnet_type(that_client)->af;
 
-	req.u.p.sel.sport = subnet_nport(this_client);
-	req.u.p.sel.dport = subnet_nport(that_client);
+	/* .[sd]addr, .prefixlen_[sd], .[sd]port */
+	SELECTOR_TO_XFRM(this_client, req.u.p.sel, s);
+	SELECTOR_TO_XFRM(that_client, req.u.p.sel, d);
 
 	/*
+	 * Munge .[sd]port?
+	 *
 	 * As per RFC 4301/5996, icmp type is put in the most significant
 	 * 8 bits and icmp code is in the least significant 8 bits of port
 	 * field.
@@ -642,10 +645,6 @@ static bool netlink_raw_eroute(const ip_address *this_host,
 
 	req.u.p.sel.sport_mask = req.u.p.sel.sport == 0 ? 0 : ~0;
 	req.u.p.sel.dport_mask = req.u.p.sel.dport == 0 ? 0 : ~0;
-	ip2xfrm(&this_client->addr, &req.u.p.sel.saddr);
-	ip2xfrm(&that_client->addr, &req.u.p.sel.daddr);
-	req.u.p.sel.prefixlen_s = this_client->maskbits;
-	req.u.p.sel.prefixlen_d = that_client->maskbits;
 	req.u.p.sel.proto = transport_proto;
 	req.u.p.sel.family = family;
 
@@ -658,7 +657,7 @@ static bool netlink_raw_eroute(const ip_address *this_host,
 
 		/* The caller should have set the proper priority by now */
 		req.u.p.priority = sa_priority;
-		DBG(DBG_KERNEL, DBG_log("IPsec Sa SPD priority set to %d", req.u.p.priority));
+		dbg("IPsec SA SPD priority set to %d", req.u.p.priority);
 
 		req.u.p.action = XFRM_POLICY_ALLOW;
 		if (policy == IPSEC_POLICY_DISCARD)
@@ -704,8 +703,8 @@ static bool netlink_raw_eroute(const ip_address *this_host,
 				if (!tmpl[i].mode)
 					continue;
 
-				ip2xfrm(this_host, &tmpl[i].saddr);
-				ip2xfrm(that_host, &tmpl[i].id.daddr);
+				tmpl[i].saddr = xfrm_from_address(this_host);
+				tmpl[i].id.daddr = xfrm_from_address(that_host);
 			}
 
 			attr = (struct rtattr *)((char *)&req + req.n.nlmsg_len);
@@ -737,7 +736,8 @@ static bool netlink_raw_eroute(const ip_address *this_host,
                if (xfrm_if_id > 0) {
 #ifdef USE_XFRM_INTERFACE
 			struct rtattr *attr = (struct rtattr *)((char *)&req + req.n.nlmsg_len);
-			DBG(DBG_KERNEL, DBG_log("%s netlink: XFRMA_IF_ID  %" PRIu32 " req.n.nlmsg_type=%" PRIu32, __func__, xfrm_if_id, req.n.nlmsg_type));
+			dbg("%s netlink: XFRMA_IF_ID  %" PRIu32 " req.n.nlmsg_type=%" PRIu32,
+			    __func__, xfrm_if_id, req.n.nlmsg_type);
 			attr->rta_type = XFRMA_IF_ID;
 			attr->rta_len = RTA_LENGTH(sizeof(uint32_t));
 			memcpy(RTA_DATA(attr), &xfrm_if_id, sizeof(uint32_t));
@@ -763,9 +763,7 @@ static bool netlink_raw_eroute(const ip_address *this_host,
 		passert(len <= MAX_SECCTX_LEN);
 		attr->rta_type = XFRMA_SEC_CTX;
 
-		DBG(DBG_KERNEL,
-			DBG_log("passing security label \"%s\" to kernel",
-				policy_label));
+		dbg("passing security label \"%s\" to kernel", policy_label);
 		attr->rta_len =
 			RTA_LENGTH(sizeof(struct xfrm_user_sec_ctx) + len);
 		uctx = RTA_DATA(attr);
@@ -813,7 +811,7 @@ static void netlink_sa_policy_to_id(struct xfrm_userpolicy_id *id,
 }
 
 static bool netlink_get_sa_policy(const struct kernel_sa *sa,
-		struct xfrm_userpolicy_id *id)
+				  struct xfrm_userpolicy_id *id)
 {
 	struct {
 		struct nlmsghdr n;
@@ -831,21 +829,27 @@ static bool netlink_get_sa_policy(const struct kernel_sa *sa,
 	req.id.dir = sa->nk_dir;	/* clang 6.0.0 thinks RHS is garbage or undefined */
 	req.id.sel.family = address_type(sa->src.address)->af;
 
-	ip2xfrm(&sa->src.client->addr, &req.id.sel.saddr);
-	ip2xfrm(&sa->dst.client->addr, &req.id.sel.daddr);
-	req.id.sel.prefixlen_s = sa->src.client->maskbits;
-	req.id.sel.prefixlen_d = sa->dst.client->maskbits;
+	/* .[sd]addr, .prefixlen_[sd], .[sd]port */
+	SELECTOR_TO_XFRM(sa->src.client, req.id.sel, s);
+	SELECTOR_TO_XFRM(sa->dst.client, req.id.sel, d);
 
-	req.id.sel.sport = subnet_nport(sa->src.client);
-	req.id.sel.dport = subnet_nport(sa->dst.client);
+	/*
+	 * XXX: the other calls to CLIENT_TO_XFRM() also munge the
+	 * .[sd]port per ICMP, and set .[sd]port_mask.
+	 *
+	 * This code does not.
+	 *
+	 * Presumably this code, which is called from
+	 * netlink_migrate_sa(), and is handling MOBIKE only allows
+	 * addresses (no port, no rotocol).  Hence the default value
+	 * of .[sd]port_mask (0), is correct.
+	 */
 
 	if (!send_netlink_msg(&req.n, XFRM_MSG_NEWPOLICY, &rsp, "Get policy",
 			      sa->text_said)) {
-		DBG(DBG_KERNEL, DBG_log(" netlink_get_sa_policy : policy died on us: %s, "
-				       "index=%d %s",
-					enum_name(&netkey_sa_dir_names,
-						req.id.dir),
-					req.id.index, sa->text_said));
+		dbg(" netlink_get_sa_policy : policy died on us: %s, index=%d %s",
+		    enum_name(&netkey_sa_dir_names, req.id.dir),
+		    req.id.index, sa->text_said);
 		return FALSE;
 	} else if (rsp.n.nlmsg_len < NLMSG_LENGTH(sizeof(rsp.u.pol))) {
 		libreswan_log(" netlink_get_sa_policy: XFRM_MSG_GETPOLICY %s "
@@ -864,10 +868,10 @@ static bool netlink_get_sa_policy(const struct kernel_sa *sa,
 static void  set_migration_attr(const struct kernel_sa *sa,
 		struct xfrm_user_migrate *m)
 {
-	ip2xfrm(sa->src.address, &m->old_saddr);
-	ip2xfrm(sa->dst.address, &m->old_daddr);
-	ip2xfrm(sa->src.new_address, &m->new_saddr);
-	ip2xfrm(sa->dst.new_address, &m->new_daddr);
+	m->old_saddr = xfrm_from_address(sa->src.address);
+	m->old_daddr = xfrm_from_address(sa->dst.address);
+	m->new_saddr = xfrm_from_address(sa->src.new_address);
+	m->new_daddr = xfrm_from_address(sa->dst.new_address);
 
 	m->proto = sa->proto->ipproto;
 	m->mode = XFRM_MODE_TUNNEL;  /* AA_201705 hard coded how to figure this out */
@@ -880,10 +884,11 @@ static bool create_xfrm_migrate_sa(struct state *st, const int dir,
 {
 	const struct connection *const c = st->st_connection;
 
-	const int encap_type =
-		(st->st_interface->protocol == &ip_protocol_tcp) ? TCP_ENCAP_ESPINTCP :
-		(st->hidden_variables.st_nat_traversal & NAT_T_DETECTED) ? ESPINUDP_WITH_NON_ESP : 0;
-	dbg("TCP: encap type %d", encap_type);
+	const struct ip_encap *encap_type =
+		(st->st_interface->protocol == &ip_protocol_tcp) ? &ip_encap_esp_in_tcp :
+		(st->hidden_variables.st_nat_traversal & NAT_T_DETECTED) ? &ip_encap_esp_in_udp :
+		NULL;
+	dbg("TCP/NAT: encap type "PRI_IP_ENCAP, pri_ip_encap(encap_type));
 
 	const struct ip_protocol *proto;
 	struct ipsec_proto_info *proto_info;
@@ -928,7 +933,7 @@ static bool create_xfrm_migrate_sa(struct state *st, const int dir,
 			sa.dst.new_address = &st->st_mobike_local_endpoint;
 			sa.spi = proto_info->our_spi;
 			set_text_said(n, dst, sa.spi, proto);
-			if (encap_type != 0) {
+			if (encap_type != NULL) {
 				encap_sport = endpoint_hport(&st->st_remote_endpoint);
 				encap_dport = endpoint_hport(&st->st_mobike_local_endpoint);
 			}
@@ -941,7 +946,7 @@ static bool create_xfrm_migrate_sa(struct state *st, const int dir,
 			sa.dst.new_address = dst;
 			sa.spi = proto_info->attrs.spi;
 			set_text_said(n, src, sa.spi, proto);
-			if (encap_type != 0) {
+			if (encap_type != NULL) {
 				encap_sport = endpoint_hport(&st->st_mobike_local_endpoint);
 				encap_dport = endpoint_hport(&st->st_remote_endpoint);
 			}
@@ -961,7 +966,7 @@ static bool create_xfrm_migrate_sa(struct state *st, const int dir,
 			sa.dst.new_address = &c->spd.this.host_addr;
 			sa.spi = proto_info->our_spi;
 			set_text_said(n, src, sa.spi, proto);
-			if (encap_type != 0) {
+			if (encap_type != NULL) {
 				encap_sport = endpoint_hport(&st->st_mobike_remote_endpoint);
 				pexpect_st_local_endpoint(st);
 				encap_dport = endpoint_hport(&st->st_interface->local_endpoint);
@@ -976,7 +981,7 @@ static bool create_xfrm_migrate_sa(struct state *st, const int dir,
 			sa.spi = proto_info->attrs.spi;
 			set_text_said(n, dst, sa.spi, proto);
 
-			if (encap_type != 0) {
+			if (encap_type != NULL) {
 				pexpect_st_local_endpoint(st);
 				encap_sport = endpoint_hport(&st->st_interface->local_endpoint);
 				encap_dport = endpoint_hport(&st->st_mobike_remote_endpoint);
@@ -1001,7 +1006,7 @@ static bool create_xfrm_migrate_sa(struct state *st, const int dir,
 			enum_name(&netkey_sa_dir_names, dir));
 	add_str(text_said, SAMIGTOT_BUF, text_said, reqid_buf);
 
-	DBG(DBG_KERNEL, DBG_log("%s", text_said));
+	dbg("%s", text_said);
 
 	*ret_sa = sa;
 	return TRUE;
@@ -1043,13 +1048,14 @@ static bool migrate_xfrm_sa(const struct kernel_sa *sa)
 		req.n.nlmsg_len += attr->rta_len;
 	}
 
-	if (sa->encap_type != 0) {
-		dbg("adding xfrm_encap_templ when migrating sa type=%d sport=%d dport=%d",
-		    sa->encap_type, sa->src.encap_port, sa->dst.encap_port);
+	if (sa->encap_type != NULL) {
+		dbg("adding xfrm_encap_templ when migrating sa encap_type="PRI_IP_ENCAP" sport=%d dport=%d",
+		    pri_ip_encap(sa->encap_type),
+		    sa->src.encap_port, sa->dst.encap_port);
 		attr = (struct rtattr *)((char *)&req + req.n.nlmsg_len);
 		struct xfrm_encap_tmpl natt;
 
-		natt.encap_type = sa->encap_type;
+		natt.encap_type = sa->encap_type->encap_type;
 		natt.encap_sport = ntohs(sa->src.encap_port);
 		natt.encap_dport = ntohs(sa->dst.encap_port);
 		zero(&natt.encap_oa);
@@ -1234,8 +1240,8 @@ static bool netlink_add_sa(const struct kernel_sa *sa, bool replace)
 	req.n.nlmsg_flags = NLM_F_REQUEST | NLM_F_ACK;
 	req.n.nlmsg_type = replace ? XFRM_MSG_UPDSA : XFRM_MSG_NEWSA;
 
-	ip2xfrm(sa->src.address, &req.p.saddr);
-	ip2xfrm(sa->dst.address, &req.p.id.daddr);
+	req.p.saddr = xfrm_from_address(sa->src.address);
+	req.p.id.daddr = xfrm_from_address(sa->dst.address);
 
 	req.p.id.spi = sa->spi;
 	req.p.id.proto = esatype2proto(sa->esatype);
@@ -1245,11 +1251,11 @@ static bool netlink_add_sa(const struct kernel_sa *sa, bool replace)
 	 * tunnels in linux 2.6.25+
 	 */
 	if (sa->mode == ENCAPSULATION_MODE_TUNNEL) {
-		DBG(DBG_KERNEL, DBG_log("netlink: enabling tunnel mode"));
+		dbg("netlink: enabling tunnel mode");
 		req.p.mode = XFRM_MODE_TUNNEL;
 		req.p.flags |= XFRM_STATE_AF_UNSPEC;
 	} else {
-		DBG(DBG_KERNEL, DBG_log("netlink: enabling transport mode"));
+		dbg("netlink: enabling transport mode");
 		req.p.mode = XFRM_MODE_TRANSPORT;
 	}
 
@@ -1261,34 +1267,41 @@ static bool netlink_add_sa(const struct kernel_sa *sa, bool replace)
 	 * inform us if we need or don't need selectors.
 	 */
 	if (sa->add_selector) {
-		ip_subnet src_tmp;
-		ip_subnet dst_tmp;
-		const ip_subnet *src;
-		const ip_subnet *dst;
+		ip_selector src = *sa->src.client;
+		ip_selector dst = *sa->dst.client;
 
 		/*
 		 * With XFRM/NETKEY and transport mode with nat-traversal we
-		 * need to change outbound IPsec SA to point to exteral ip of
+		 * need to change outbound IPsec SA to point to external ip of
 		 * the peer. Here we substitute real client ip with NATD ip.
+		 *
+		 * XXX: unset_protoport is technically wrong - the
+		 * protocol is sa->transport_proto(?) and .  Code
+		 * further down will fix up the .sport / .dport in the
+		 * xfrm structure.
+		 *
+		 * XXX: is .src.address / .dst.address an address or
+		 * endpoint in disguise?
 		 */
-		if (sa->inbound == 0) {
-			addrtosubnet(sa->dst.address, &dst_tmp);
-			dst = &dst_tmp;
+		if (sa->inbound) {
+			/* inbound; fix this end */
+			ip_port port = selector_port(sa->src.client);
+			ip_protoport protoport = protoport2(sa->transport_proto, port);
+			src = selector_from_address(sa->src.address, &protoport);
 		} else {
-			dst = sa->dst.client;
+			/* outbound; fix other end */
+			ip_port port = selector_port(sa->dst.client);
+			ip_protoport protoport = protoport2(sa->transport_proto, port);
+			dst = selector_from_address(sa->dst.address, &protoport);
 		}
 
-		if (sa->inbound == 1) {
-			addrtosubnet(sa->src.address, &src_tmp);
-			src = &src_tmp;
-		} else {
-			src = sa->src.client;
-		}
-
-		req.p.sel.sport = subnet_nport(sa->src.client);
-		req.p.sel.dport = subnet_nport(sa->dst.client);
+		/* .[sd]addr, .prefixlen_[sd], .[sd]port */
+		SELECTOR_TO_XFRM(&src, req.p.sel, s);
+		SELECTOR_TO_XFRM(&dst, req.p.sel, d);
 
 		/*
+		 * Munge .[sd]port?
+		 *
 		 * As per RFC 4301/5996, icmp type is put in the most
 		 * significant 8 bits and icmp code is in the least
 		 * significant 8 bits of port field. Although Libreswan does
@@ -1317,16 +1330,12 @@ static bool netlink_add_sa(const struct kernel_sa *sa, bool replace)
 
 		req.p.sel.sport_mask = req.p.sel.sport == 0 ? 0 : ~0;
 		req.p.sel.dport_mask = req.p.sel.dport == 0 ? 0 : ~0;
-		ip2xfrm(&src->addr, &req.p.sel.saddr);
-		ip2xfrm(&dst->addr, &req.p.sel.daddr);
-		req.p.sel.prefixlen_s = src->maskbits;
-		req.p.sel.prefixlen_d = dst->maskbits;
 		req.p.sel.proto = sa->transport_proto;
-		req.p.sel.family = subnet_type(src)->af;
+		req.p.sel.family = subnet_type(&src)->af;
 	}
 
 	req.p.reqid = sa->reqid;
-	DBG(DBG_KERNEL, DBG_log("XFRM: adding IPsec SA with reqid %d", sa->reqid));
+	dbg("XFRM: adding IPsec SA with reqid %d", sa->reqid);
 
 	/* TODO expose limits to kernel_sa via config */
 	req.p.lft.soft_byte_limit = XFRM_INF;
@@ -1353,29 +1362,29 @@ static bool netlink_add_sa(const struct kernel_sa *sa, bool replace)
 	 * (XFRM_STATE_ALIGN4) do change original behavior.
 	*/
 	if (sa->esatype == ET_AH && addrtypeof(sa->src.address) == AF_INET) {
-		DBG(DBG_KERNEL, DBG_log("netlink: aligning IPv4 AH to 32bits as per RFC-4302, Section 3.3.3.2.1"));
+		dbg("netlink: aligning IPv4 AH to 32bits as per RFC-4302, Section 3.3.3.2.1");
 		req.p.flags |= XFRM_STATE_ALIGN4;
 	}
 
 	if (sa->esatype != ET_IPCOMP) {
 		if (sa->esn) {
-			DBG(DBG_KERNEL, DBG_log("netlink: enabling ESN"));
+			dbg("netlink: enabling ESN");
 			req.p.flags |= XFRM_STATE_ESN;
 		}
 		if (sa->decap_dscp) {
-			DBG(DBG_KERNEL, DBG_log("netlink: enabling Decap DSCP"));
+			dbg("netlink: enabling Decap DSCP");
 			req.p.flags |= XFRM_STATE_DECAP_DSCP;
 		}
 		if (sa->nopmtudisc) {
-			DBG(DBG_KERNEL, DBG_log("netlink: disabling Path MTU Discovery"));
+			dbg("netlink: disabling Path MTU Discovery");
 			req.p.flags |= XFRM_STATE_NOPMTUDISC;
 		}
 
 		if (sa->replay_window <= 32 && !sa->esn) {
 			/* this only works up to 32, for > 32 and for ESN, we need struct xfrm_replay_state_esn */
 			req.p.replay_window = sa->replay_window;
-			DBG(DBG_KERNEL, DBG_log("netlink: setting IPsec SA replay-window to %d using old-style req",
-				req.p.replay_window));
+			dbg("netlink: setting IPsec SA replay-window to %d using old-style req",
+			    req.p.replay_window);
 		} else {
 			uint32_t bmp_size = BYTES_FOR_BITS(sa->replay_window +
 				pad_up(sa->replay_window, sizeof(uint32_t) * BITS_PER_BYTE) );
@@ -1385,8 +1394,8 @@ static bool netlink_add_sa(const struct kernel_sa *sa, bool replace)
 				.replay_window = sa->replay_window,
 				.bmp_len = bmp_size / sizeof(uint32_t),
 			};
-			DBG(DBG_KERNEL, DBG_log("netlink: setting IPsec SA replay-window to %" PRIu32 " using xfrm_replay_state_esn",
-				xre.replay_window));
+			dbg("netlink: setting IPsec SA replay-window to %" PRIu32 " using xfrm_replay_state_esn",
+			    xre.replay_window);
 
 			attr->rta_type = XFRMA_REPLAY_ESN_VAL;
 			attr->rta_len = RTA_LENGTH(sizeof(xre) + bmp_size);
@@ -1505,9 +1514,8 @@ static bool netlink_add_sa(const struct kernel_sa *sa, bool replace)
 			/* Traffic Flow Confidentiality is only for ESP tunnel mode */
 			if (sa->tfcpad != 0 &&
 			    sa->mode == ENCAPSULATION_MODE_TUNNEL) {
-				DBG(DBG_KERNEL,
-					DBG_log("netlink: setting TFC to %" PRIu32 " (up to PMTU)",
-						sa->tfcpad));
+				dbg("netlink: setting TFC to %" PRIu32 " (up to PMTU)",
+				    sa->tfcpad);
 
 				attr->rta_type = XFRMA_TFCPAD;
 				attr->rta_len = RTA_LENGTH(sizeof(sa->tfcpad));
@@ -1519,12 +1527,13 @@ static bool netlink_add_sa(const struct kernel_sa *sa, bool replace)
 		}
 	}
 
-	if (sa->encap_type != 0) {
-		dbg("adding xfrm-encap-tmpl when adding sa type=%d sport=%d dport=%d",
-		    sa->encap_type, sa->src.encap_port, sa->dst.encap_port);
+	if (sa->encap_type != NULL) {
+		dbg("adding xfrm-encap-tmpl when adding sa encap_type="PRI_IP_ENCAP" sport=%d dport=%d",
+		    pri_ip_encap(sa->encap_type),
+		    sa->src.encap_port, sa->dst.encap_port);
 		struct xfrm_encap_tmpl natt;
 
-		natt.encap_type = sa->encap_type;
+		natt.encap_type = sa->encap_type->encap_type;
 		natt.encap_sport = ntohs(sa->src.encap_port);
 		natt.encap_dport = ntohs(sa->dst.encap_port);
 		zero(&natt.encap_oa);
@@ -1540,7 +1549,8 @@ static bool netlink_add_sa(const struct kernel_sa *sa, bool replace)
 
 	if (sa->xfrm_if_id > 0) {
 #ifdef USE_XFRM_INTERFACE
-		DBG(DBG_KERNEL, DBG_log("%s netlink: XFRMA_IF_ID %" PRIu32 " req.n.nlmsg_type=%" PRIu32, __func__, sa->xfrm_if_id, req.n.nlmsg_type));
+		dbg("%s netlink: XFRMA_IF_ID %" PRIu32 " req.n.nlmsg_type=%" PRIu32,
+		    __func__, sa->xfrm_if_id, req.n.nlmsg_type);
 		attr->rta_type = XFRMA_IF_ID;
 		attr->rta_len = RTA_LENGTH(sizeof(uint32_t));
 		memcpy(RTA_DATA(attr), &sa->xfrm_if_id, sizeof(uint32_t));
@@ -1570,9 +1580,9 @@ static bool netlink_add_sa(const struct kernel_sa *sa, bool replace)
 
 		req.n.nlmsg_len += attr->rta_len;
 		attr = (struct rtattr *)((char *)attr + attr->rta_len);
-		DBG(DBG_KERNEL, DBG_log("netlink: esp-hw-offload set via interface %s for IPsec SA", sa->nic_offload_dev));
+		dbg("netlink: esp-hw-offload set via interface %s for IPsec SA", sa->nic_offload_dev);
 	} else {
-		DBG(DBG_KERNEL, DBG_log("netlink: esp-hw-offload not set for IPsec SA"));
+		dbg("netlink: esp-hw-offload not set for IPsec SA");
 	}
 
 	if (sa->sec_ctx != NULL) {
@@ -1625,7 +1635,7 @@ static bool netlink_del_sa(const struct kernel_sa *sa)
 	req.n.nlmsg_flags = NLM_F_REQUEST | NLM_F_ACK;
 	req.n.nlmsg_type = XFRM_MSG_DELSA;
 
-	ip2xfrm(sa->dst.address, &req.id.daddr);
+	req.id.daddr = xfrm_from_address(sa->dst.address);
 
 	req.id.spi = sa->spi;
 	req.id.family = addrtypeof(sa->src.address);
@@ -1633,7 +1643,7 @@ static bool netlink_del_sa(const struct kernel_sa *sa)
 
 	req.n.nlmsg_len = NLMSG_ALIGN(NLMSG_LENGTH(sizeof(req.id)));
 
-	DBG(DBG_KERNEL, DBG_log("XFRM: deleting IPsec SA with reqid %d", sa->reqid));
+	dbg("XFRM: deleting IPsec SA with reqid %d", sa->reqid);
 
 	return send_netlink_msg(&req.n, NLMSG_NOOP, NULL, "Del SA", sa->text_said);
 }
@@ -1646,58 +1656,41 @@ static bool netlink_del_sa(const struct kernel_sa *sa)
  * @param dst ip_address formatted destination
  * @return err_t NULL if okay, otherwise an error
  */
-static err_t xfrm_to_ip_address(unsigned family, const xfrm_address_t *xaddr,
-				ip_address *addr)
+static ip_address address_from_xfrm(const struct ip_info *afi,
+				    const xfrm_address_t *xaddr)
 {
-	const struct ip_info *afi = aftoinfo(family);
-	if (afi == NULL) {
-		return "unknown address family";
-	}
-
 	/* .len == ipv6 size */
 	shunk_t x = THING_AS_SHUNK(*xaddr);
 
-	*addr = afi->any_address; /* "zero" it & set type */
-	chunk_t a = address_as_chunk(addr);
+	ip_address addr = afi->any_address; /* "zero" it & set type */
+	chunk_t a = address_as_chunk(&addr);
 
 	/* a = x */
 	passert(a.len <= x.len);
 	memcpy(a.ptr, x.ptr, a.len);
 
-	return NULL;
+	return addr;
 }
 
 /*
- * Create ip_endpoint out of xfrm_address_t:NPORT.
+ * Create ip_selector / ip_client out of xfrm_address_t:NPORT.
  */
-static err_t xfrm_to_endpoint(unsigned family, const xfrm_address_t *src,
-			      uint16_t nport, ip_endpoint *dst)
+
+static ip_selector selector_from_xfrm(const struct ip_info *afi, unsigned ipproto,
+				      const xfrm_address_t *src, uint16_t nport)
 {
-	ip_address ip;
-	err_t err = xfrm_to_ip_address(family, src, &ip);
-	if (err != NULL) {
-		return err;
-	}
-	*dst = endpoint(&ip, ntohs(nport));
-	return NULL;
+	ip_address address = address_from_xfrm(afi, src);
+	ip_protoport protoport = protoport2(ipproto, ip_nport(nport));
+	return selector_from_address(&address, &protoport);
 }
 
 static void netlink_acquire(struct nlmsghdr *n)
 {
 	struct xfrm_user_acquire *acquire;
-	const xfrm_address_t *srcx, *dstx;
-	int src_proto, dst_proto;
-	ip_endpoint src, dst;
-	ip_subnet ours, his;
-	unsigned family;
-	unsigned transport_proto;
-	err_t ugh = NULL;
 	struct xfrm_user_sec_ctx_ike *uctx = NULL;
 	struct xfrm_user_sec_ctx_ike uctx_space;
 
-	DBG(DBG_KERNEL,
-		DBG_log("xfrm netlink msg len %zu",
-			(size_t) n->nlmsg_len));
+	dbg("xfrm netlink msg len %zu", (size_t) n->nlmsg_len);
 
 	if (n->nlmsg_len < NLMSG_LENGTH(sizeof(*acquire))) {
 		libreswan_log(
@@ -1725,10 +1718,18 @@ static void netlink_acquire(struct nlmsghdr *n)
 	 */
 	acquire = NLMSG_DATA(n);	/* insufficiently aligned */
 
-	srcx = &acquire->sel.saddr;
-	dstx = &acquire->sel.daddr;
-	family = acquire->policy.sel.family;
-	transport_proto = acquire->sel.proto;
+	const struct ip_info *afi = aftoinfo(acquire->policy.sel.family);
+	if (afi == NULL) {
+		libreswan_log("XFRM_MSG_ACQUIRE message from kernel malformed: family %u unknown",
+			      acquire->policy.sel.family);
+		return;
+	}
+	ip_selector ours = selector_from_xfrm(afi, acquire->sel.proto,
+					      &acquire->sel.saddr,
+					      acquire->sel.sport);
+	ip_selector theirs = selector_from_xfrm(afi, acquire->sel.proto,
+						&acquire->sel.daddr,
+						acquire->sel.dport);
 
 	/*
 	 * Run through rtattributes looking for XFRMA_SEC_CTX
@@ -1742,18 +1743,18 @@ static void netlink_acquire(struct nlmsghdr *n)
 			NLMSG_SPACE(sizeof(struct xfrm_user_acquire));
 
 	while (remaining > 0) {
-		DBG(DBG_KERNEL,
-			DBG_log("xfrm acquire rtattribute type %u", attr->rta_type));
+		dbg("xfrm acquire rtattribute type %u ...", attr->rta_type);
 		switch (attr->rta_type) {
 		case XFRMA_TMPL:
 		{
 			struct xfrm_user_tmpl* tmpl = (struct xfrm_user_tmpl *) RTA_DATA(attr);
-			DBG(DBG_KERNEL,
-				DBG_log("xfrm template attribute with reqid:%d, spi:%d, proto:%d", tmpl->reqid, tmpl->id.spi, tmpl->id.proto));
+			dbg("... xfrm template attribute with reqid:%d, spi:%d, proto:%d",
+			    tmpl->reqid, tmpl->id.spi, tmpl->id.proto);
 			break;
 		}
 		case XFRMA_POLICY_TYPE:
 			/* discard */
+			dbg("... xfrm policy type ignored");
 			break;
 		case XFRMA_SEC_CTX:
 		{
@@ -1761,11 +1762,10 @@ static void netlink_acquire(struct nlmsghdr *n)
 			/* length of text of label */
 			size_t len = xuctx->ctx_len;
 
-			DBG(DBG_KERNEL,
-				DBG_log("xfrm xuctx: exttype=%d, len=%d, ctx_doi=%d, ctx_alg=%d, ctx_len=%zu",
-					xuctx->exttype, xuctx->len,
-					xuctx->ctx_doi, xuctx->ctx_alg,
-					len));
+			dbg("... xfrm xuctx: exttype=%d, len=%d, ctx_doi=%d, ctx_alg=%d, ctx_len=%zu",
+			    xuctx->exttype, xuctx->len,
+			    xuctx->ctx_doi, xuctx->ctx_alg,
+			    len);
 
 			if (uctx != NULL) {
 				libreswan_log("Second Sec Ctx label in a single Acquire message; ignoring Acquire message");
@@ -1782,10 +1782,9 @@ static void netlink_acquire(struct nlmsghdr *n)
 			 * note: xuctx + 1 is tricky:
 			 * first byte after header
 			 */
-			DBG(DBG_KERNEL,
-				DBG_log("xfrm: xuctx security context value: %.*s",
-					xuctx->ctx_len,
-					(const char *) (xuctx + 1)));
+			dbg("xfrm: xuctx security context value: %.*s",
+			    xuctx->ctx_len,
+			    (const char *) (xuctx + 1));
 
 			zero(&uctx_space);
 			uctx = &uctx_space;
@@ -1816,60 +1815,43 @@ static void netlink_acquire(struct nlmsghdr *n)
 			break;
 		}
 		default:
-			DBG(DBG_KERNEL,
-				DBG_log("ignoring unknown xfrm acquire payload type %u",
-					attr->rta_type));
+			dbg("... ignoring unknown xfrm acquire payload type %u",
+			    attr->rta_type);
 			break;
 		}
 		/* updates remaining too */
 		attr = RTA_NEXT(attr, remaining);
 	}
 
-	src_proto = dst_proto = acquire->sel.proto;
-
 	/*
 	 * XXX also the type of src/dst should be checked to make sure
 	 *     that they aren't v4 to v6 or something goofy
 	 */
-	if (NULL == (ugh = xfrm_to_endpoint(family, srcx, acquire->sel.sport, &src)) &&
-	    NULL == (ugh = xfrm_to_endpoint(family, dstx, acquire->sel.dport, &dst)) &&
-	    NULL == (ugh = (src_proto == dst_proto ?
-			NULL : "src and dst protocols differ")) &&
-	    NULL == (ugh = addrtosubnet(&src, &ours)) &&
-	    NULL == (ugh = addrtosubnet(&dst, &his)))
-		record_and_initiate_opportunistic(&ours, &his, transport_proto, uctx,
-			"%acquire-netlink");
-
-	if (ugh != NULL)
-		libreswan_log(
-			"XFRM_MSG_ACQUIRE message from kernel malformed: %s",
-			ugh);
+	record_and_initiate_opportunistic(&ours, &theirs,
+					  acquire->sel.proto, uctx,
+					  "%acquire-netlink");
 }
 
 static void netlink_shunt_expire(struct xfrm_userpolicy_info *pol)
 {
 	const xfrm_address_t *srcx = &pol->sel.saddr;
 	const xfrm_address_t *dstx = &pol->sel.daddr;
-	unsigned family = pol->sel.family;
 	unsigned transport_proto = pol->sel.proto;
-	ip_address src, dst;
-	err_t ugh;
 
-	ugh = xfrm_to_ip_address(family, srcx, &src);
-	if (ugh == NULL)
-		ugh = xfrm_to_ip_address(family, dstx, &dst);
-	if (ugh != NULL) {
-		libreswan_log(
-			"XFRM_MSG_POLEXPIRE message from kernel malformed: %s",
-			ugh);
+	const struct ip_info *afi = aftoinfo(pol->sel.family);
+	if (afi == NULL) {
+		libreswan_log("XFRM_MSG_POLEXPIRE message from kernel malformed: address family %u unknown",
+			      pol->sel.family);
 		return;
 	}
 
+	ip_address src = address_from_xfrm(afi, srcx);
+	ip_address dst = address_from_xfrm(afi, dstx);
+
 	if (delete_bare_shunt(&src, &dst,
 			transport_proto, SPI_HOLD /* why spi to use? */,
-			"delete expired bare shunt"))
-	{
-		DBG(DBG_CONTROL, DBG_log("netlink_shunt_expire() called delete_bare_shunt() with success"));
+			      "delete expired bare shunt")) {
+		dbg("netlink_shunt_expire() called delete_bare_shunt() with success");
 	} else {
 		libreswan_log("netlink_shunt_expire() called delete_bare_shunt() which failed!");
 	}
@@ -1881,11 +1863,10 @@ static void process_addr_chage(struct nlmsghdr *n)
 	struct rtattr *rta = IFLA_RTA(nl_msg);
 	size_t msg_size = IFA_PAYLOAD (n);
 	ip_address ip;
-	ipstr_buf ip_str;
 
-	DBG(DBG_KERNEL, DBG_log("xfrm netlink address change %s msg len %zu",
-				sparse_val_show(rtm_type_names, n->nlmsg_type),
-				(size_t) n->nlmsg_len));
+	dbg("xfrm netlink address change %s msg len %zu",
+	    sparse_val_show(rtm_type_names, n->nlmsg_type),
+	    (size_t) n->nlmsg_len);
 
 	while (RTA_OK(rta, msg_size)) {
 		err_t ugh;
@@ -1908,18 +1889,18 @@ static void process_addr_chage(struct nlmsghdr *n)
 			ugh = data_to_address(RTA_DATA(rta), RTA_PAYLOAD(rta)/*size*/,
 					      aftoinfo(nl_msg->ifa_family), &ip);
 			if (ugh != NULL) {
-				libreswan_log("ERROR IFA_ADDRESS invalid %s",
-						ugh);
+				libreswan_log("ERROR IFA_ADDRESS invalid %s", ugh);
 			} else  {
-				DBG(DBG_KERNEL, DBG_log("XFRM IFA_ADDRESS %s IFA_ADDRESS is this PPP?",
-							ipstr(&ip, &ip_str)));
+				address_buf ip_str;
+				dbg("XFRM IFA_ADDRESS %s IFA_ADDRESS is this PPP?",
+				    str_address(&ip, &ip_str));
 			}
 			break;
 
 		default:
-			DBG(DBG_KERNEL, DBG_log("IKEv2 received address %s type %u",
-						sparse_val_show(rtm_type_names, n->nlmsg_type),
-						rta->rta_type));
+			dbg("IKEv2 received address %s type %u",
+			    sparse_val_show(rtm_type_names, n->nlmsg_type),
+			    rta->rta_type);
 			break;
 		}
 
@@ -1949,15 +1930,13 @@ static void netlink_policy_expire(struct nlmsghdr *n)
 	upe = NLMSG_DATA(n);
 	xfrm2ip(&upe->pol.sel.saddr, &src, upe->pol.sel.family);
 	xfrm2ip(&upe->pol.sel.daddr, &dst, upe->pol.sel.family);
-	DBG(DBG_KERNEL, {
-			ipstr_buf a;
-			ipstr_buf b;
-			DBG_log("%s src %s/%u dst %s/%u dir %d index %d",
-					__func__,
-					ipstr(&src, &a), upe->pol.sel.prefixlen_s,
-					ipstr(&dst, &b), upe->pol.sel.prefixlen_d,
-					upe->pol.dir, upe->pol.index);
-			});
+	address_buf a;
+	address_buf b;
+	dbg("%s src %s/%u dst %s/%u dir %d index %d",
+	    __func__,
+	    str_address(&src, &a), upe->pol.sel.prefixlen_s,
+	    str_address(&dst, &b), upe->pol.sel.prefixlen_d,
+	    upe->pol.dir, upe->pol.index);
 
 	req.id.dir = upe->pol.dir;
 	req.id.index = upe->pol.index;
@@ -1966,22 +1945,19 @@ static void netlink_policy_expire(struct nlmsghdr *n)
 	req.n.nlmsg_len = NLMSG_ALIGN(NLMSG_LENGTH(sizeof(req.id)));
 
 	if (!send_netlink_msg(&req.n, XFRM_MSG_NEWPOLICY, &rsp, "Get policy", "?")) {
-		DBG(DBG_KERNEL,
-			DBG_log("netlink_policy_expire: policy died on us: dir=%d, index=%d",
-				req.id.dir, req.id.index));
+		dbg("netlink_policy_expire: policy died on us: dir=%d, index=%d",
+		    req.id.dir, req.id.index);
 	} else if (rsp.n.nlmsg_len < NLMSG_LENGTH(sizeof(rsp.u.pol))) {
 		libreswan_log(
 			"netlink_policy_expire: XFRM_MSG_GETPOLICY returned message with length %zu < %zu bytes; ignore message",
 			(size_t) rsp.n.nlmsg_len,
 			sizeof(rsp.u.pol));
 	} else if (req.id.index != rsp.u.pol.index) {
-		DBG(DBG_KERNEL,
-			DBG_log("netlink_policy_expire: policy was replaced: dir=%d, oldindex=%d, newindex=%d",
-				req.id.dir, req.id.index, rsp.u.pol.index));
+		dbg("netlink_policy_expire: policy was replaced: dir=%d, oldindex=%d, newindex=%d",
+		    req.id.dir, req.id.index, rsp.u.pol.index);
 	} else if (upe->pol.curlft.add_time != rsp.u.pol.curlft.add_time) {
-		DBG(DBG_KERNEL,
-			DBG_log("netlink_policy_expire: policy was replaced  and you have won the lottery: dir=%d, index=%d",
-				req.id.dir, req.id.index));
+		dbg("netlink_policy_expire: policy was replaced  and you have won the lottery: dir=%d, index=%d",
+		    req.id.dir, req.id.index);
 	} else {
 		switch (upe->pol.dir) {
 		case XFRM_POLICY_OUT:
@@ -2016,11 +1992,9 @@ static bool netlink_get(int fd)
 		return TRUE;
 	} else if (addr.nl_pid != 0) {
 		/* not for us: ignore */
-		DBG(DBG_KERNEL,
-			DBG_log("netlink_get: ignoring %s message from process %u",
-				sparse_val_show(xfrm_type_names,
-						rsp.n.nlmsg_type),
-				addr.nl_pid));
+		dbg("netlink_get: ignoring %s message from process %u",
+		    sparse_val_show(xfrm_type_names, rsp.n.nlmsg_type),
+		    addr.nl_pid);
 		return TRUE;
 	} else if ((size_t)r != rsp.n.nlmsg_len) {
 		libreswan_log(
@@ -2029,9 +2003,8 @@ static bool netlink_get(int fd)
 		return TRUE;
 	}
 
-	DBG(DBG_KERNEL,
-		DBG_log("netlink_get: %s message",
-			sparse_val_show(xfrm_type_names, rsp.n.nlmsg_type)));
+	dbg("netlink_get: %s message",
+	    sparse_val_show(xfrm_type_names, rsp.n.nlmsg_type));
 
 	switch (rsp.n.nlmsg_type) {
 	case XFRM_MSG_ACQUIRE:
@@ -2081,8 +2054,8 @@ static ipsec_spi_t netlink_get_spi(const ip_address *src,
 	req.n.nlmsg_flags = NLM_F_REQUEST;
 	req.n.nlmsg_type = XFRM_MSG_ALLOCSPI;
 
-	ip2xfrm(src, &req.spi.info.saddr);
-	ip2xfrm(dst, &req.spi.info.id.daddr);
+	req.spi.info.saddr = xfrm_from_address(src);
+	req.spi.info.id.daddr = xfrm_from_address(dst);
 	req.spi.info.mode = tunnel_mode;
 	req.spi.info.reqid = reqid;
 	req.spi.info.id.proto = proto->ipproto;
@@ -2106,9 +2079,8 @@ static ipsec_spi_t netlink_get_spi(const ip_address *src,
 		return 0;
 	}
 
-	DBG(DBG_KERNEL,
-		DBG_log("netlink_get_spi: allocated 0x%x for %s",
-			ntohl(rsp.u.sa.id.spi), text_said));
+	dbg("netlink_get_spi: allocated 0x%x for %s",
+	    ntohl(rsp.u.sa.id.spi), text_said);
 	return rsp.u.sa.id.spi;
 }
 
@@ -2218,7 +2190,7 @@ static bool netlink_eroute_idle(struct state *st, deltatime_t idle_max)
 
 	passert(st != NULL);
 	return !get_sa_info(st, TRUE, &idle_time) ||
-		!deltaless(idle_time, idle_max);
+		deltatime_cmp(idle_time, >=, idle_max);
 }
 
 static bool netlink_shunt_eroute(const struct connection *c,
@@ -2385,11 +2357,8 @@ static void netlink_process_raw_ifaces(struct raw_iface *rifaces)
 			DBG_log("invalid listen= option ignored: %s", e);
 			pluto_listen = NULL;
 		}
-		DBG(DBG_CONTROL, {
-			ipstr_buf b;
-			DBG_log("Only looking to listen on %s",
-				ipstr(&lip, &b));
-		});
+		address_buf b;
+		dbg("Only looking to listen on %s", str_address(&lip, &b));
 	}
 
 	/*
@@ -2470,12 +2439,9 @@ static void netlink_process_raw_ifaces(struct raw_iface *rifaces)
 
 		/* what if we didn't find a virtual interface? */
 		if (v == NULL) {
-			DBG(DBG_CONTROL, {
-				ipstr_buf b;
-				DBG_log("IP interface %s %s has no matching ipsec* interface -- ignored",
-					ifp->name,
-					ipstr(&ifp->addr, &b));
-			});
+			address_buf b;
+			dbg("IP interface %s %s has no matching ipsec* interface -- ignored",
+			    ifp->name, str_address(&ifp->addr, &b));
 			continue;
 		}
 
@@ -2531,7 +2497,7 @@ static bool netlink_get_sa(const struct kernel_sa *sa, uint64_t *bytes,
 	req.n.nlmsg_flags = NLM_F_REQUEST;
 	req.n.nlmsg_type = XFRM_MSG_GETSA;
 
-	ip2xfrm(sa->dst.address, &req.id.daddr);
+	req.id.daddr = xfrm_from_address(sa->dst.address);
 
 	req.id.spi = sa->spi;
 	req.id.family = addrtypeof(sa->src.address);
@@ -2655,7 +2621,7 @@ static bool netlink_v6holes(void)
 {
 	/* this could be per interface specific too */
 	char proc_f[] = "/proc/sys/net/ipv6/conf/all/disable_ipv6";
-	int disable_ipv6 = 0;
+	int disable_ipv6 = -1;
 	bool ret = FALSE;
 	struct stat sts;
 
@@ -2671,13 +2637,19 @@ static bool netlink_v6holes(void)
 			LOG_ERRNO(errno, "\"%s\"", proc_f);
 		}
 	} else {
-		LOG_ERRNO(errno, "could not stat \"%s\"", proc_f);
+		dbg("starting without ipv6 support! could not stat \"%s\"" PRI_ERRNO,
+		    proc_f, pri_errno(errno));
+		/*
+		 * pretend success, do not exit pluto,
+		 * likely IPv6 is disabled in kernel at compile time. e.g. OpenWRT.
+		 */
+		ret = TRUE;
 	}
 
 	if (disable_ipv6 == 1) {
-		DBG(DBG_KERNEL, DBG_log("net.ipv6.conf.all.disable_ipv6=1 ignore ipv6 holes"));
+		dbg("net.ipv6.conf.all.disable_ipv6=1 ignore ipv6 holes");
 		ret = TRUE; /* pretend success, do not exit pluto */
-	} else {
+	} else if (disable_ipv6 == 0) {
 		ret = netlink_bypass_policy(AF_INET6, IPPROTO_ICMPV6,
 						ICMP_NEIGHBOR_DISCOVERY);
 		ret &= netlink_bypass_policy(AF_INET6, IPPROTO_ICMPV6,
@@ -2734,7 +2706,7 @@ static bool qry_xfrm_mirgrate_support(struct nlmsghdr *hdr)
 				continue;
 			} else if (errno == EAGAIN) {
 				/* old kernel F22 - dos not return proper error ??? */
-				DBG(DBG_KERNEL, DBG_log("ignore EAGAIN in %s assume MOBIKE migration is supported", __func__));
+				dbg("ignore EAGAIN in %s assume MOBIKE migration is supported", __func__);
 				break;
 			}
 		}
@@ -2744,7 +2716,7 @@ static bool qry_xfrm_mirgrate_support(struct nlmsghdr *hdr)
 	close(nl_fd);
 
 	if (rsp.n.nlmsg_type == NLMSG_ERROR && rsp.u.e.error == -ENOPROTOOPT) {
-		DBG(DBG_KERNEL, DBG_log("MOBIKE will fail got ENOPROTOOPT"));
+		dbg("MOBIKE will fail got ENOPROTOOPT");
 		return FALSE;
 	}
 
@@ -2829,7 +2801,6 @@ static bool netlink_poke_ipsec_policy_hole(const struct iface_dev *ifd, int fd)
 const struct kernel_ops netkey_kernel_ops = {
 	.kern_name = "netkey",
 	.type = USE_NETKEY,
-	.inbound_eroute =  TRUE,
 	.scan_shunts = expire_bare_shunts,
 	.async_fdp = &nl_xfrm_fd,
 	.route_fdp = &nl_route_fd,

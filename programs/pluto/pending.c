@@ -73,13 +73,11 @@ void add_pending(struct fd *whack_sock,
 
 	for (p = pp ? *pp : NULL; p != NULL; p = p->next) {
 		if (p->connection == c && p->ike == ike) {
-			DBG(DBG_CONTROL, {
-				ipstr_buf b;
-				char cib[CONN_INST_BUF];
-				DBG_log("Ignored already queued up pending IPsec SA negotiation with %s \"%s\"%s",
-					ipstr(&c->spd.that.host_addr, &b),
-					c->name, fmt_conn_instance(c, cib));
-			});
+			address_buf b;
+			connection_buf cib;
+			dbg("Ignored already queued up pending IPsec SA negotiation with %s "PRI_CONNECTION"",
+			    str_address(&c->spd.that.host_addr, &b),
+			    pri_connection(c, &cib));
 			return;
 		}
 	}
@@ -96,10 +94,9 @@ void add_pending(struct fd *whack_sock,
 	p->uctx = NULL;
 	if (uctx != NULL) {
 		p->uctx = clone_thing(*uctx, "pending security context");
-		DBG(DBG_CONTROL,
-		    DBG_log("pending IPsec SA negotiation with security context %s, %d",
-			    p->uctx->sec_ctx_value,
-			    p->uctx->ctx.ctx_len));
+		dbg("pending IPsec SA negotiation with security context %s, %d",
+		    p->uctx->sec_ctx_value,
+		    p->uctx->ctx.ctx_len);
 	}
 
 	/*
@@ -147,13 +144,13 @@ void release_pending_whacks(struct state *st, err_t story)
 	 * CHILD_SA fails with a timeout then this code will be called
 	 * with the CHILD_SA.
 	 *
-	 * XXX: Since this is ment to release pending whacks, should
+	 * XXX: Since this is meant to release pending whacks, should
 	 * this check for, and release the whacks for any pending
 	 * CHILD_SA attached to this ST's IKE SA?
 	 */
 	struct ike_sa *ike_with_same_whack = NULL;
 	if (IS_CHILD_SA(st)) {
-		struct ike_sa *ike = ike_sa(st);
+		struct ike_sa *ike = ike_sa(st, HERE);
 		if (same_fd(st->st_whack_sock, ike->sa.st_whack_sock)) {
 			ike_with_same_whack = ike;
 			release_any_whack(&ike->sa, HERE, "release pending whacks state's IKE SA");
@@ -173,7 +170,7 @@ void release_pending_whacks(struct state *st, err_t story)
 	 * waiting on it should be deleted.
 	 *
 	 * SAME_FD() is used to identify whack sockets that are
-	 * differnt to ST - when found a further release message is
+	 * different to ST - when found a further release message is
 	 * printed.
 	 */
 
@@ -220,19 +217,16 @@ static void delete_pending(struct pending **pp)
 		connection_discard(p->connection);
 	close_any(&p->whack_sock); /*on-heap*/
 
-	DBG(DBG_DPD, {
+	if (DBGP(DBG_BASE)) {
 		if (p->connection == NULL) {
 			/* ??? when does this happen? */
-			DBG_log("removing pending policy for no connection {%p}",
-				p);
+			DBG_log("removing pending policy for no connection {%p}", p);
 		} else {
-			char cib[CONN_INST_BUF];
-			DBG_log("removing pending policy for \"%s\"%s {%p}",
-				p->connection->name,
-				fmt_conn_instance(p->connection, cib),
-				p);
+			connection_buf cib;
+			DBG_log("removing pending policy for "PRI_CONNECTION" {%p}",
+				pri_connection(p->connection, &cib), p);
 		}
-	});
+	}
 
 	pfreeany(p->uctx);
 	pfree(p);
@@ -291,16 +285,13 @@ void unpend(struct ike_sa *ike, struct connection *cc)
 			default:
 				bad_case(ike->sa.st_ike_version);
 			}
-			DBG(DBG_CONTROL, {
-				ipstr_buf b;
-				char cib[CONN_INST_BUF];
-				DBG_log("%s pending %s with %s \"%s\"%s",
-					what,
-					(ike->sa.st_ike_version == IKEv2) ? "Child SA" : "Quick Mode",
-					ipstr(&p->connection->spd.that.host_addr, &b),
-					p->connection->name,
-					fmt_conn_instance(p->connection, cib));
-			});
+			address_buf b;
+			connection_buf cib;
+			dbg("%s pending %s with %s "PRI_CONNECTION"",
+			    what,
+			    (ike->sa.st_ike_version == IKEv2) ? "Child SA" : "Quick Mode",
+			    str_address(&p->connection->spd.that.host_addr, &b),
+			    pri_connection(p->connection, &cib));
 
 			p->connection = NULL;           /* ownership transferred */
 			delete_pending(pp);	/* in effect, advances pp */
@@ -341,25 +332,18 @@ bool pending_check_timeout(const struct connection *c)
 	struct pending **pp, *p;
 
 	for (pp = host_pair_first_pending(c); (p = *pp) != NULL; ) {
-		DBG(DBG_DPD, {
-			deltatime_t waited = monotimediff(mononow(), p->pend_time);
-			char cib[CONN_INST_BUF];
-			DBG_log("checking connection \"%s\"%s for stuck phase 2s (waited %jd, patience 3*%jd)",
-				c->name,
-				fmt_conn_instance(c, cib),
-				deltasecs(waited),
-				deltasecs(c->dpd_timeout));
-			});
-
+		deltatime_t waited = monotimediff(mononow(), p->pend_time);
+		connection_buf cib;
+		dbg("checking connection "PRI_CONNECTION" for stuck phase 2s (waited %jd, patience 3*%jd)",
+		    pri_connection(c, &cib), deltasecs(waited),
+		    deltasecs(c->dpd_timeout));
 		if (deltasecs(c->dpd_timeout) > 0) {
 			if (!monobefore(mononow(),
-				monotimesum(p->pend_time,
+				monotime_add(p->pend_time,
 					deltatimescale(3, 1, c->dpd_timeout)))) {
-				DBG(DBG_DPD, {
-					char cib[CONN_INST_BUF];
-					DBG_log("connection \"%s\"%s stuck, restarting",
-						c->name, fmt_conn_instance(c, cib));
-				});
+				connection_buf cib;
+				dbg("connection "PRI_CONNECTION" stuck, restarting",
+				    pri_connection(c, &cib));
 				return TRUE;
 			}
 		}
@@ -423,7 +407,7 @@ void flush_pending_by_connection(const struct connection *c)
 	}
 }
 
-void show_pending_phase2(const struct fd *whackfd,
+void show_pending_phase2(struct show *s,
 			 const struct connection *c,
 			 const struct ike_sa *ike)
 {
@@ -436,7 +420,7 @@ void show_pending_phase2(const struct fd *whackfd,
 	for (p = *pp; p != NULL; p = p->next) {
 		if (p->ike == ike) {
 			/* connection-name state-number [replacing state-number] */
-			WHACK_LOG(RC_COMMENT, whackfd, buf) {
+			WHACK_LOG(RC_COMMENT, show_fd(s), buf) {
 				jam(buf, "#%lu: pending ", p->ike->sa.st_serialno);
 				jam_string(buf, (ike->sa.st_ike_version == IKEv2) ? "CHILD SA" : "Phase 2");
 				jam(buf, " for ");

@@ -55,7 +55,7 @@ enum ike_version {
 #define IPSEC_SA_LIFETIME_MAXIMUM secs_per_day
 #define FIPS_IPSEC_SA_LIFETIME_MAXIMUM secs_per_hour * 8
 #define FIPS_IKE_SA_LIFETIME_MAXIMUM secs_per_hour * 24
-#define FIPS_MIN_RSA_KEY_SIZE 3072
+#define FIPS_MIN_RSA_KEY_SIZE 2048 /* 112 bits, see SP800-131A */
 
 #define PLUTO_SHUNT_LIFE_DURATION_DEFAULT (15 * secs_per_minute)
 #define PLUTO_HALFOPEN_SA_LIFE (secs_per_minute )
@@ -71,10 +71,9 @@ enum ike_version {
 #define DEFAULT_XFRM_IF_NAME "ipsec1"
 
 enum kernel_interface {
-	NO_KERNEL = 1,
-	USE_NETKEY= 2,
-	USE_BSDKAME = 3,
-	USE_WIN2K = 4,
+	USE_NATIVE,
+	USE_NETKEY,
+	USE_BSDKAME,
 };
 
 /* RFC 3706 Dead Peer Detection */
@@ -164,14 +163,12 @@ enum natt_method {
 
 /* Timer events */
 
-enum event_type {
-	EVENT_NULL,			/* non-event */
+/*
+ * Timer events not associated with states (aka global
+ * timers).
+ */
 
-	/*
-	 * Timer events not associated with states (aka global
-	 * timers).
-	 */
-
+enum global_timer {
 	EVENT_REINIT_SECRET,		/* Refresh cookie secret */
 	EVENT_SHUNT_SCAN,		/* scan shunt eroutes known to kernel */
 	EVENT_PENDING_DDNS,		/* try to start connections where DNS failed at init */
@@ -189,8 +186,10 @@ enum event_type {
 	EVENT_NAT_T_KEEPALIVE,		/* NAT Traversal Keepalive */
 
 	EVENT_PROCESS_KERNEL_QUEUE,	/* non-netkey */
+};
 
-	GLOBAL_TIMERS_ROOF,
+enum event_type {
+	EVENT_NULL,			/* non-event */
 
 	/* events associated with connections */
 
@@ -226,11 +225,11 @@ enum event_type {
 #define EVENT_GIVEUP_ON_DNS_DELAY	(5 * secs_per_minute)
 #define EVENT_RELEASE_WHACK_DELAY	10	/* seconds */
 
-#define RTM_NEWADDR_ROUTE_DELAY		3 /* seconds */
+#define RTM_NEWADDR_ROUTE_DELAY		deltatime(3) /* seconds */
 
-#define PARENT_MIN_LIFE			1 /* second */
-#define EXPIRE_OLD_SA			1 /* second */
-#define REPLACE_ORPHAN			1 /* second */
+#define PARENT_MIN_LIFE_DELAY		deltatime(1) /* second */
+#define EXPIRE_OLD_SA_DELAY		deltatime(1) /* second */
+#define REPLACE_ORPHAN_DELAY		deltatime(1) /* second */
 
 /*
  * an arbitrary milliseconds delay for responder. A workaround for iOS, iPhone.
@@ -242,9 +241,9 @@ enum event_type {
 #ifndef RETRANSMIT_INTERVAL_DEFAULT_MS
 # define RETRANSMIT_INTERVAL_DEFAULT_MS	500 /* wait time doubled each retransmit - in milliseconds */
 #endif
-#define DELETE_SA_DELAY			RETRANSMIT_TIMEOUT_DEFAULT /* wait until the other side giveup on us */
-#define EVENT_CRYPTO_TIMEOUT_DELAY	RETRANSMIT_TIMEOUT_DEFAULT /* wait till the other side give up on us */
-#define EVENT_PAM_TIMEOUT_DELAY		RETRANSMIT_TIMEOUT_DEFAULT /* wait until this side give up on PAM */
+#define DELETE_SA_DELAY			deltatime(RETRANSMIT_TIMEOUT_DEFAULT) /* wait until the other side giveup on us */
+#define EVENT_CRYPTO_TIMEOUT_DELAY	deltatime(RETRANSMIT_TIMEOUT_DEFAULT) /* wait till the other side give up on us */
+#define EVENT_PAM_TIMEOUT_DELAY		deltatime(RETRANSMIT_TIMEOUT_DEFAULT) /* wait until this side give up on PAM */
 
 #define REVIVE_CONN_DELAY	5 /* seconds */
 #define REVIVE_CONN_DELAY_MAX  300 /* Do not delay more than 5 minutes per attempt */
@@ -319,6 +318,8 @@ typedef enum {
 	STF_SUSPEND,            /*   suspend     no       no     tbd? */
 	STF_OK,                 /*    yes        no     message? tbd? */
 	STF_INTERNAL_ERROR,     /*     no        no      never   tbd? */
+	STF_V2_DELETE_EXCHANGE_INITIATOR_IKE_SA,
+                                /*   forced    maybe     maybe  'success' */
 	STF_FATAL,		/*     no      always    never   fail */
 	STF_FAIL,       	/*     no      maybe?    maybe?  fail */
 	STF_ROOF = STF_FAIL + 65536 /* see RFC and above */
@@ -333,7 +334,8 @@ typedef enum {
  */
 #define MAXIMUM_RETRANSMITS_PER_EXCHANGE     12
 
-#define MAXIMUM_RESPONDER_WAIT		   200 /* seconds before responder giveup */
+#define MAXIMUM_RESPONDER_WAIT_DELAY	   	deltatime(200) /* seconds before responder giveup */
+
 #define MAXIMUM_INVALID_KE_RETRANS 3
 
 #define MAXIMUM_MALFORMED_NOTIFY             16
@@ -403,23 +405,6 @@ enum {
 #define DBG_ALL         (DBG_BASE | DBG_CPU_USAGE)
 
 /* singleton sets: must be kept in sync with the items! */
-
-/* so things don't break */
-#define DBG_RAW		DBG_BASE
-#define DBG_PARSING	DBG_BASE
-#define DBG_EMITTING	DBG_BASE
-#define DBG_CONTROL	DBG_BASE
-#define DBG_LIFECYCLE	DBG_BASE
-#define DBG_KERNEL	DBG_BASE
-#define DBG_DNS		DBG_BASE
-#define DBG_OPPO	DBG_BASE
-#define DBG_CONTROLMORE	DBG_BASE
-#define DBG_NATT	DBG_BASE
-#define DBG_X509	DBG_BASE
-#define DBG_DPD		DBG_BASE
-#define DBG_XAUTH	DBG_BASE
-#define DBG_RETRANSMITS	DBG_BASE
-#define DBG_OPPOINFO	DBG_BASE
 
 /* These are not part of "base" debugging */
 #define DBG_TMI		LELEM(DBG_TMI_IX)
@@ -517,18 +502,16 @@ enum state_kind {
 	 */
 	STATE_IKEv2_FLOOR,
 
-	/* IKE SA INITIATOR states */
+	/* IKE SA */
 
 	STATE_PARENT_I0 = STATE_IKEv2_FLOOR,	/* waiting for KE to finish */
 	STATE_PARENT_I1,        /* IKE_SA_INIT: sent initial message, waiting for reply */
 	STATE_PARENT_I2,        /* IKE_AUTH: sent auth message, waiting for reply */
-	STATE_PARENT_I3,        /* IKE_AUTH done: received auth response */
-
-	/* IKE_SA RESPONDER states */
 
 	STATE_PARENT_R0,	/* just starting */
 	STATE_PARENT_R1,	/* IKE_SA_INIT: sent response */
-	STATE_PARENT_R2,	/* IKE_AUTH: sent response */
+
+	STATE_V2_ESTABLISHED_IKE_SA,
 
 	/* IKE exchange can also create a child */
 
@@ -537,24 +520,22 @@ enum state_kind {
 
 	/* IKEv2 CREATE_CHILD_SA Initiator states */
 
-	STATE_V2_CREATE_I0,		/* larval: sent nothing yet */
-	STATE_V2_CREATE_I,		/* sent first message of CREATE_CHILD new IPsec */
+	STATE_V2_NEW_CHILD_I0,		/* larval: sent nothing yet */
+	STATE_V2_NEW_CHILD_I1,		/* sent first message of CREATE_CHILD new IPsec */
 
 	STATE_V2_REKEY_IKE_I0,		/* larval: sent nothing yet */
-	STATE_V2_REKEY_IKE_I,		/* sent first message (via parrenti) to rekey parent */
+	STATE_V2_REKEY_IKE_I1,		/* sent first message (via parrenti) to rekey parent */
 
 	STATE_V2_REKEY_CHILD_I0,	/* larval: sent nothing yet */
-	STATE_V2_REKEY_CHILD_I,		/* sent first message (via parent to rekey child sa. */
-
-	STATE_V2_IPSEC_I,		/* IPsec SA final state - CREATE_CHILD & AUTH */
+	STATE_V2_REKEY_CHILD_I1,	/* sent first message (via parent to rekey child sa. */
 
 	/* IKEv2 CREATE_CHILD_SA Responder states */
 
-	STATE_V2_CREATE_R0,		/* larval: sent nothing yet. */
+	STATE_V2_NEW_CHILD_R0,		/* larval: sent nothing yet. */
 	STATE_V2_REKEY_IKE_R0,		/* larval: sent nothing yet terminal state STATE_PARENT_R2 */
 	STATE_V2_REKEY_CHILD_R0,	/* larval: sent nothing yet. */
 
-	STATE_V2_IPSEC_R,		/* IPsec SA final state - CREATE_CHILD & AUTH */
+	STATE_V2_ESTABLISHED_CHILD_SA,	/* IPsec SA final state - CREATE_CHILD & AUTH */
 
 	/* IKEv2 Delete States */
 	STATE_IKESA_DEL,
@@ -567,32 +548,19 @@ enum state_kind {
 #define STATE_IKE_ROOF (STATE_IKEv2_ROOF+1)	/* not a state! */
 
 /*
- * The IKEv2 (RFC 7296) original role.  Either the "original
- * initiator" or the "original responder" as identified by the I
- * (Initiator flag).
+ * From whos perspective is the operation being performed.
  *
- * The "original initiator" will set the I (Initiator) flag
- * (ISAKMP_FLAGS_v2_IKE_I) when sending either the initial SA_INIT
- * packet or CREATE_CHILD_SA rekey-ike request.  The original
- * responder will see the I flag set in all packets it receives from
- * the original initiator.
- *
- * The IKEv1 equivalent is the phase1 role.  It is identified by the
- * IKEv1 IS_PHASE1_INIT() macro.
- *
- * The values are chosen such that no role has values that overlap.
- *
- * XXX: If IKEv2 code correctly uses CHILD_SA and IKE_SA then the, is
- * probably be redundant - An IKE SA's SA_ROLE should be consistent
- * with its ORIGINAL_ROLE.  Currently code isn't consistent, so both
- * are used/defined.
+ * For instance, is the hash being computed from the LOCAL or REMOTE
+ * perspective?
  */
 
-enum original_role {
-	/* values follow after enum message_role */
-	ORIGINAL_INITIATOR = 5, /* IKE_I present */
-	ORIGINAL_RESPONDER = 6, /* IKE_I missing */
+enum perspective {
+	NO_PERSPECTIVE,
+	LOCAL_PERSPECTIVE,
+	REMOTE_PERSPECTIVE,
 };
+
+extern enum_names perspective_names;
 
 /*
  * The IKEv2 message role.  Is this message a request or a response
@@ -605,16 +573,14 @@ enum original_role {
  * the MESSAGE_RESPONSE) and request responder (receives the
  * MESSAGE_REQUEST), and not the original (IKE SA) initiator /
  * responder that determine how crypto material is carved up.
- *
- * The values are chosen such that no role has values that overlap.
  */
 
 enum message_role {
 	NO_MESSAGE = 0,
-	/* values follow after enum sa_role */
-	MESSAGE_REQUEST = 3, /* MSG_R missing */
-	MESSAGE_RESPONSE = 4, /* MSR_R present */
-	/* followed by enum original_role */
+#define MESSAGE_ROLE_FLOOR 1
+	MESSAGE_REQUEST = 1, /* MSG_R missing */
+	MESSAGE_RESPONSE = 2, /* MSR_R present */
+#define MESSAGE_ROLE_ROOF 3
 };
 
 extern struct keywords message_role_names;
@@ -634,14 +600,12 @@ extern struct keywords message_role_names;
  *
  * The IKEv1 equivalent is the phase1 role.  It is identified by the
  * IKEv1 IS_PHASE1_INIT() macro.
- *
- * The values are chosen such that no role has values that overlap.
  */
 
 enum sa_role {
 	SA_INITIATOR = 1,
 	SA_RESPONDER = 2,
-	/* followed by enum message_role */
+#define SA_ROLE_ROOF 3
 };
 
 extern struct keywords sa_role_names;
@@ -695,24 +659,22 @@ extern struct keywords sa_role_names;
 				       LELEM(STATE_MODE_CFG_I1) | \
 				       LELEM(STATE_XAUTH_I0) | \
 				       LELEM(STATE_XAUTH_I1) | \
-				       LELEM(STATE_PARENT_I3) | \
-				       LELEM(STATE_PARENT_R2))
+				       LELEM(STATE_V2_ESTABLISHED_IKE_SA))
 
 #define IS_ISAKMP_SA_ESTABLISHED(s) ((LELEM(s->kind) & ISAKMP_SA_ESTABLISHED_STATES) != LEMPTY)
 
-#define IPSECSA_PENDING_STATES (LELEM(STATE_V2_CREATE_I) | \
-				LELEM(STATE_V2_CREATE_I0) | \
-				LELEM(STATE_V2_CREATE_R0) | \
+#define IPSECSA_PENDING_STATES (LELEM(STATE_V2_NEW_CHILD_I1) | \
+				LELEM(STATE_V2_NEW_CHILD_I0) | \
+				LELEM(STATE_V2_NEW_CHILD_R0) | \
 	/* due to a quirk in initiator duplication next one is also needed */ \
 				LELEM(STATE_PARENT_I2))
 
 /* IKEv1 or IKEv2 */
-#define IS_IPSEC_SA_ESTABLISHED(s) (IS_CHILD_SA(s) && \
+#define IS_IPSEC_SA_ESTABLISHED(s) (IS_CHILD_SA(s) &&			\
 				    ((s->st_state->kind) == STATE_QUICK_I2 || \
-				    (s->st_state->kind) == STATE_QUICK_R1 || \
-				    (s->st_state->kind) == STATE_QUICK_R2 || \
-				    (s->st_state->kind) == STATE_V2_IPSEC_I || \
-				    (s->st_state->kind) == STATE_V2_IPSEC_R))
+				     (s->st_state->kind) == STATE_QUICK_R1 || \
+				     (s->st_state->kind) == STATE_QUICK_R2 || \
+				     (s->st_state->kind) == STATE_V2_ESTABLISHED_CHILD_SA))
 
 #define IS_MODE_CFG_ESTABLISHED(s) ((s->kind) == STATE_MODE_CFG_R2)
 
@@ -720,28 +682,25 @@ extern struct keywords sa_role_names;
 
 /* adding for just a R2 or I3 check. Will need to be changed when parent/child discerning is fixed */
 
-#define IS_V2_ESTABLISHED(s) ((s->kind) == STATE_PARENT_R2 || \
-		(s->kind) == STATE_PARENT_I3 || (s->kind) == STATE_V2_IPSEC_I || \
-		(s->kind) == STATE_V2_IPSEC_R)
+#define IS_V2_ESTABLISHED(s) ((s->kind) == STATE_V2_ESTABLISHED_IKE_SA || \
+			      (s->kind) == STATE_V2_ESTABLISHED_CHILD_SA)
 
-#define IS_IKE_SA_ESTABLISHED(st) \
-	( IS_ISAKMP_SA_ESTABLISHED(st->st_state) || \
-		(IS_PARENT_SA_ESTABLISHED(st) && \
-		 (st->st_clonedfrom == SOS_NOBODY)))
+#define IS_IKE_SA_ESTABLISHED(ST) \
+	( IS_ISAKMP_SA_ESTABLISHED((ST)->st_state) ||	\
+		(IS_PARENT_SA_ESTABLISHED(ST) && \
+		 ((ST)->st_clonedfrom == SOS_NOBODY)))
 
 /*
  * ??? Issue here is that our child SA appears as a
  * STATE_PARENT_I3/STATE_PARENT_R2 state which it should not.
  * So we fall back to checking if it is cloned, and therefore really a child.
  */
-#define IS_CHILD_SA_ESTABLISHED(ST)				\
-	(((ST)->st_state->kind == STATE_V2_IPSEC_I		\
-	  || (ST)->st_state->kind == STATE_V2_IPSEC_R) &&	\
+#define IS_CHILD_SA_ESTABLISHED(ST)				  \
+	((ST)->st_state->kind == STATE_V2_ESTABLISHED_CHILD_SA && \
 	 IS_CHILD_SA(ST))
 
-#define IS_PARENT_SA_ESTABLISHED(st) \
-    (((st)->st_state->kind == STATE_PARENT_I3 || (st)->st_state->kind == STATE_PARENT_R2) && \
-    !IS_CHILD_SA(st))
+#define IS_PARENT_SA_ESTABLISHED(st) (((st)->st_state->kind == STATE_V2_ESTABLISHED_IKE_SA) && \
+				      !IS_CHILD_SA(st))
 
 #define IS_CHILD_SA(st)  ((st)->st_clonedfrom != SOS_NOBODY)
 #define IS_IKE_SA(st)	 ((st)->st_clonedfrom == SOS_NOBODY)

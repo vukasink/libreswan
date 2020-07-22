@@ -19,22 +19,22 @@
 
 #include "ietf_constants.h"
 #include "ip_info.h"
-#include "libreswan/passert.h"
+#include "passert.h"
 #include "lswlog.h"		/* for bad_case() */
 
 /*
  * Construct well known addresses.
  */
 
-#define ANY_IPv4_ADDRESS { .version = 4, .bytes = { 0, }, }
-#define ANY_IPv6_ADDRESS { .version = 6, .bytes = { 0, }, }
+#define ANY_IPv4_ADDRESS { .is_address = true, .version = 4, }
+#define ANY_IPv6_ADDRESS { .is_address = true, .version = 6, }
 
 #ifdef ENDPOINT_TYPE
 #define ANY_IPv4_ENDPOINT { .address = ANY_IPv4_ADDRESS, .hport = 0, }
 #define ANY_IPv6_ENDPOINT { .address = ANY_IPv6_ADDRESS, .hport = 0, }
 #else
-#define ANY_IPv4_ENDPOINT ANY_IPv4_ADDRESS
-#define ANY_IPv6_ENDPOINT ANY_IPv6_ADDRESS
+#define ANY_IPv4_ENDPOINT { .is_endpoint = true, .version = 4, }
+#define ANY_IPv6_ENDPOINT { .is_endpoint = true, .version = 6, }
 #endif
 
 const struct ip_info ipv4_info = {
@@ -43,7 +43,10 @@ const struct ip_info ipv4_info = {
 	.ip_size = sizeof(struct in_addr),
 	.ip_name = "IPv4",
 	.any_address = ANY_IPv4_ADDRESS, /* 0.0.0.0 */
-	.loopback_address = { .version = 4, .bytes = { 127, 0, 0, 1, }, }, /* 127.0.0.1 */
+	.loopback_address = {
+		.version = 4,
+		.bytes = { .byte = { 127, 0, 0, 1, }, },
+	}, /* 127.0.0.1 */
 
 	/* ip_endpoint */
 	.any_endpoint = ANY_IPv4_ENDPOINT, /* 0.0.0.0:0 */
@@ -52,7 +55,6 @@ const struct ip_info ipv4_info = {
 	.mask_cnt = 32,
 	.no_addresses = { .addr = ANY_IPv4_ENDPOINT, .maskbits = 32, }, /* 0.0.0.0/32 */
 	.all_addresses = { .addr = ANY_IPv4_ENDPOINT, .maskbits = 0, }, /* 0.0.0.0/32 */
-
 	/* ike */
 	.ikev1_max_fragment_size = ISAKMP_V1_FRAG_MAXLEN_IPv4,
 	.ikev2_max_fragment_size = ISAKMP_V2_FRAG_MAXLEN_IPv4,
@@ -75,7 +77,7 @@ const struct ip_info ipv6_info = {
 	.ip_size = sizeof(struct in6_addr),
 	.ip_name = "IPv6",
 	.any_address = ANY_IPv6_ADDRESS, /* :: */
-	.loopback_address = { .version = 6, .bytes = { [15] = 1, }, }, /* ::1 */
+	.loopback_address = { .version = 6, .bytes = { { [15] = 1, }, }, }, /* ::1 */
 
 	/* ip_endpoint */
 	.any_endpoint = ANY_IPv6_ENDPOINT, /* [::]:0 */

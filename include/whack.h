@@ -34,6 +34,7 @@
 #include "impair.h"
 #include "ip_range.h"
 #include "ip_subnet.h"
+#include "ip_protoport.h"
 
 #ifndef DEFAULT_RUNDIR
 # define DEFAULT_RUNDIR "/run/pluto/"
@@ -92,18 +93,16 @@ struct whack_end {
 
 	enum keyword_host host_type;
 	ip_address host_addr;
-	uint16_t host_port;	/* host order  (for IKE communications) */
+	unsigned host_ikeport;
 	ip_address host_nexthop;
 	ip_address host_srcip;
 	ip_subnet host_vtiip;
 	ip_subnet ifaceip;
 
 	ip_subnet client;
+	ip_protoport protoport;
+
 	bool has_client;
-	bool has_client_wildcard;
-	uint16_t port;		/* host order */
-	bool has_port_wildcard;
-	uint8_t protocol;
 
 	bool key_from_DNS_on_demand;
 	enum whack_pubkey_type pubkey_type;
@@ -142,6 +141,7 @@ struct whack_message {
 	bool whack_shunt_status;
 	bool whack_fips_status;
 	bool whack_brief_status;
+	bool whack_addresspool_status;
 	bool whack_show_states;
 	bool whack_seccomp_crashtest;
 
@@ -162,7 +162,8 @@ struct whack_message {
 	lmod_t debugging;
 
 	/* what to impair and how */
-	struct whack_impair impairment;
+	struct whack_impair *impairments;
+	unsigned nr_impairments;
 
 	/* for WHACK_CONNECTION */
 
@@ -353,7 +354,6 @@ struct whack_message {
 	char *accept_redirect_to;
 
 	bool active_redirect;
-	ip_address active_redirect_peer;
 	ip_address active_redirect_gw;
 
 	/* what metric to put on ipsec routes */
@@ -392,7 +392,8 @@ struct whack_message {
 #define REREAD_SECRETS	0x01		/* reread /etc/ipsec.secrets */
 #define REREAD_CRLS	0x02		/* obsoleted - just gives a warning */
 #define REREAD_FETCH	0x04		/* update CRL from distribution point(s) */
-#define REREAD_ALL	LRANGES(REREAD_SECRETS, REREAD_FETCH)	/* all reread options */
+#define REREAD_CERTS	0x08		/* update CERT(S) of connection(s) */
+#define REREAD_ALL	LRANGES(REREAD_SECRETS, REREAD_CERTS)	/* all reread options */
 
 struct whackpacker {
 	struct whack_message *msg;

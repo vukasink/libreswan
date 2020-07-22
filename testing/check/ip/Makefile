@@ -18,12 +18,17 @@ PROGRAM_MANPAGE =
 PROGRAM = ipcheck
 
 OBJS += ipcheck.o
+OBJS += ip_sockaddr_check.o
 OBJS += ip_address_check.o
 OBJS += ip_endpoint_check.o
 OBJS += ip_range_check.o
 OBJS += ip_subnet_check.o
+OBJS += ip_selector_check.o
 OBJS += ip_said_check.o
 OBJS += ip_info_check.o
+OBJS += ip_protoport_check.o
+OBJS += ip_port_check.o
+OBJS += ip_port_range_check.o
 
 OBJS += $(LIBRESWANLIB)
 OBJS += $(LSWTOOLLIBS)

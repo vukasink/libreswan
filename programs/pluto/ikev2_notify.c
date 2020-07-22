@@ -32,6 +32,40 @@
 #include "demux.h"
 #include "pluto_stats.h"
 
+enum v2_pbs v2_notification_to_v2_pbs(v2_notification_t n)
+{
+#define C(N) case v2N_##N: return PBS_v2N_##N;
+	switch (n) {
+	C(REKEY_SA);
+	C(NO_PPK_AUTH);
+	C(PPK_IDENTITY);
+	C(SIGNATURE_HASH_ALGORITHMS);
+	C(NULL_AUTH);
+	C(IPCOMP_SUPPORTED);
+	C(IKEV2_FRAGMENTATION_SUPPORTED);
+	C(USE_PPK);
+	C(REDIRECTED_FROM);
+	C(REDIRECT_SUPPORTED);
+	C(NAT_DETECTION_SOURCE_IP);
+	C(NAT_DETECTION_DESTINATION_IP);
+	C(ESP_TFC_PADDING_NOT_SUPPORTED);
+	C(USE_TRANSPORT_MODE);
+	C(MOBIKE_SUPPORTED);
+	C(INITIAL_CONTACT);
+	C(REDIRECT);
+	C(INVALID_SYNTAX);
+	C(AUTHENTICATION_FAILED);
+	C(UNSUPPORTED_CRITICAL_PAYLOAD);
+	C(COOKIE);
+	C(COOKIE2);
+	C(INVALID_KE_PAYLOAD);
+	C(INVALID_MAJOR_VERSION);
+	C(TS_UNACCEPTABLE);
+	default: return PBS_v2_INVALID;
+	}
+#undef C
+}
+
 bool decode_v2N_ike_sa_init_request(struct msg_digest *md)
 {
 	for (struct payload_digest *ntfy = md->chain[ISAKMP_NEXT_v2N];
@@ -41,39 +75,14 @@ bool decode_v2N_ike_sa_init_request(struct msg_digest *md)
 			/* already handled earlier */
 			break;
 
-		case v2N_SIGNATURE_HASH_ALGORITHMS:
-			if (!impair.ignore_hash_notify_request) {
-				if (md->v2N.signature_hash_algorithms != NULL) {
-					dbg("ignoring duplicate Signature Hash Notify payload");
-				} else {
-					md->v2N.signature_hash_algorithms = ntfy;
-				}
-			} else {
-				libreswan_log("IMPAIR: ignoring the Signature hash notify in IKE_SA_INIT Request");
-			}
-			break;
-
-		case v2N_IKEV2_FRAGMENTATION_SUPPORTED:
-			md->v2N.fragmentation_supported = true;
-			break;
-
-		case v2N_USE_PPK:
-			md->v2N.use_ppk = true;
-			break;
-
 		case v2N_REDIRECTED_FROM:	/* currently we don't check address in this payload */
-			md->v2N.redirected_from = true;
-			break;
-
 		case v2N_REDIRECT_SUPPORTED:
-			md->v2N.redirect_supported = true;
-			break;
-
+		case v2N_USE_PPK:
+		case v2N_IKEV2_FRAGMENTATION_SUPPORTED:
 		case v2N_NAT_DETECTION_SOURCE_IP:
-			md->v2N.nat_detection_source_ip = true;
-			break;
 		case v2N_NAT_DETECTION_DESTINATION_IP:
-			md->v2N.nat_detection_destination_ip = true;
+		case v2N_SIGNATURE_HASH_ALGORITHMS:
+			/* handled elsewhere */
 			break;
 
 		/* These are not supposed to appear in IKE_INIT */
@@ -128,35 +137,13 @@ bool decode_v2N_ike_sa_init_response(struct msg_digest *md)
 				      ntfy->payload.v2n.isan_type));
 			break;
 
-		case v2N_NAT_DETECTION_SOURCE_IP:
-			/* we do handle these further down */
-			md->v2N.nat_detection_source_ip = true;
-			break;
-
-		case v2N_NAT_DETECTION_DESTINATION_IP:
-			/* we do handle these further down */
-			md->v2N.nat_detection_destination_ip = true;
-			break;
-
-		case v2N_IKEV2_FRAGMENTATION_SUPPORTED:
-			md->v2N.fragmentation_supported = true;
-			break;
-
 		case v2N_USE_PPK:
-			md->v2N.use_ppk = true;
-			break;
-
-		case v2N_REDIRECT:
-			dbg("received v2N_REDIRECT in IKE_SA_INIT reply");
-			md->v2N.redirect = ntfy;
-			break;
-
+		case v2N_IKEV2_FRAGMENTATION_SUPPORTED:
+		case v2N_NAT_DETECTION_SOURCE_IP:
+		case v2N_NAT_DETECTION_DESTINATION_IP:
 		case v2N_SIGNATURE_HASH_ALGORITHMS:
-			if (!impair.ignore_hash_notify_response) {
-				md->v2N.signature_hash_algorithms = ntfy;
-			} else {
-				libreswan_log("IMPAIR: ignoring the hash notify in IKE_SA_INIT response");
-			}
+		case v2N_REDIRECT:
+			/* handled elsewhere */
 			break;
 
 		default:
@@ -179,43 +166,16 @@ bool decode_v2N_ike_auth_request(struct msg_digest *md)
 	     ntfy != NULL; ntfy = ntfy->next) {
 		switch (ntfy->payload.v2n.isan_type) {
 
-		case v2N_PPK_IDENTITY:
-			dbg("received PPK_IDENTITY");
-			if (md->v2N.ppk_identity != NULL) {
-				loglog(RC_LOG_SERIOUS, "only one PPK_IDENTITY payload may be present");
-				return false;
-			}
-			md->v2N.ppk_identity = ntfy;
-			break;
-
-		case v2N_NO_PPK_AUTH:
-			dbg("received NO_PPK_AUTH");
-			if (md->v2N.no_ppk_auth != NULL) {
-				loglog(RC_LOG_SERIOUS, "only one NO_PPK_AUTH payload may be present");
-				return false;
-			}
-			md->v2N.no_ppk_auth = ntfy;
-			break;
-
-		case v2N_MOBIKE_SUPPORTED:
-			dbg("received v2N_MOBIKE_SUPPORTED");
-			md->v2N.mobike_supported = true;
-			break;
-
-		case v2N_NULL_AUTH:
-			dbg("received v2N_NULL_AUTH");
-			md->v2N.null_auth = ntfy;
-			break;
-
-		case v2N_INITIAL_CONTACT:
-			dbg("received v2N_INITIAL_CONTACT");
-			md->v2N.initial_contact = true;
-			break;
-
 		/* Child SA related NOTIFYs are processed later in ikev2_process_ts_and_rest() */
+		case v2N_MOBIKE_SUPPORTED:
+		case v2N_NULL_AUTH:
+		case v2N_NO_PPK_AUTH:
 		case v2N_USE_TRANSPORT_MODE:
 		case v2N_IPCOMP_SUPPORTED:
 		case v2N_ESP_TFC_PADDING_NOT_SUPPORTED:
+		case v2N_PPK_IDENTITY:
+		case v2N_INITIAL_CONTACT:
+			/* handled elsewhere */
 			break;
 
 		default:
@@ -237,25 +197,15 @@ bool decode_v2N_ike_auth_response(struct msg_digest *md)
 		case v2N_COOKIE:
 			dbg("Ignoring bogus COOKIE notify in IKE_AUTH rpely");
 			break;
-		case v2N_MOBIKE_SUPPORTED:
-			dbg("received v2N_MOBIKE_SUPPORTED");
-			md->v2N.mobike_supported = true;
-			break;
-		case v2N_PPK_IDENTITY:
-			DBG(DBG_CONTROL, DBG_log("received v2N_PPK_IDENTITY, responder used PPK"));
-			md->v2N.ppk_identity = ntfy;
-			break;
 		case v2N_REDIRECT:
-			dbg("received v2N_REDIRECT in IKE_AUTH reply");
-			md->v2N.redirect = ntfy;
-			break;
 		case v2N_ESP_TFC_PADDING_NOT_SUPPORTED:
-			dbg("received ESP_TFC_PADDING_NOT_SUPPORTED - disabling TFC");
-			md->v2N.esp_tfc_padding_not_supported = true;
-			break;
 		case v2N_USE_TRANSPORT_MODE:
-			dbg("received v2N_USE_TRANSPORT_MODE in IKE_AUTH reply");
-			md->v2N.use_transport_mode = true;
+		case v2N_MOBIKE_SUPPORTED:
+		case v2N_PPK_IDENTITY:
+			/* handled elsewhere */
+			dbg("received %s notify",
+			    enum_name(&ikev2_notify_names,
+				      ntfy->payload.v2n.isan_type));
 			break;
 		default:
 			dbg("received %s notify - ignored",
@@ -296,15 +246,11 @@ bool decode_v2N_ike_auth_child(struct msg_digest *md)
 		/* check for Child SA related NOTIFY payloads */
 		switch (ntfy->payload.v2n.isan_type) {
 		case v2N_USE_TRANSPORT_MODE:
-			md->v2N.use_transport_mode = true;
-			break;
 		case v2N_ESP_TFC_PADDING_NOT_SUPPORTED:
-			dbg("received ESP_TFC_PADDING_NOT_SUPPORTED - disabling TFC");
-			md->v2N.esp_tfc_padding_not_supported = true;
+			/* handled elsewhere */
 			break;
 		case v2N_IPCOMP_SUPPORTED:
 			dbg("received v2N_IPCOMP_SUPPORTED");
-			md->v2N.ipcomp_supported = ntfy;
 			break;
 		default:
 			dbg("ignored received NOTIFY (%d): %s ",
@@ -313,4 +259,28 @@ bool decode_v2N_ike_auth_child(struct msg_digest *md)
 		}
 	}
 	return true;
+}
+
+void decode_v2N_payload(struct logger *unused_logger UNUSED, struct msg_digest *md,
+			const struct payload_digest *notify)
+{
+	v2_notification_t n = notify->payload.v2n.isan_type;
+	const char *name = enum_name(&ikev2_notify_names, n);
+	if (name == NULL) {
+		dbg("ignoring unrecognized %d notify", n);
+		return;
+	}
+	enum v2_pbs v2_pbs = v2_notification_to_v2_pbs(n);
+	if (v2_pbs == PBS_v2_INVALID) {
+		dbg("ignoring unsupported %s notify", name);
+		return;
+	}
+	if (md->pbs[v2_pbs] != NULL) {
+		dbg("ignoring duplicate %s notify", name);
+		return;
+	}
+	if (DBGP(DBG_TMI)) {
+		DBG_log("adding %s notify", name);
+	}
+	md->pbs[v2_pbs] = &notify->pbs;
 }

@@ -1200,6 +1200,7 @@ void delete_state_tail(struct state *st)
 	free_chunk_content(&st->st_v1_acquired_sec_label);
 
 	free_chunk_content(&st->st_no_ppk_auth);
+	free_chunk_content(&st->st_ppk_id_interm);
 	free_chunk_content(&st->st_active_redirect_gw);
 
 	free_logger(&st->st_logger, HERE);
@@ -1551,6 +1552,7 @@ static struct state *duplicate_state(struct connection *c,
 	nst->st_seen_fragmentation_supported = st->st_seen_fragmentation_supported;
 	nst->st_v1_seen_fragments = st->st_v1_seen_fragments;
 	nst->st_seen_ppk = st->st_seen_ppk;
+	nst->st_ppk_interm = st->st_ppk_interm;
 	nst->st_seen_redirect_sup = st->st_seen_redirect_sup;
 	nst->st_sent_redirect = st->st_sent_redirect;
 	nst->st_event = NULL;

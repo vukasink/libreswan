@@ -664,8 +664,11 @@ struct state {
 	/*
 	 * Post-quantum Preshared Key variables (v2)
 	 */
-	bool st_ppk_used;			/* both ends agreed on PPK ID and PPK */
-	bool st_seen_ppk;			/* does remote peer support PPK? */
+	bool st_seen_ppk;		/* does remote peer support PPK? */
+	bool st_ppk_used;		/* both ends agreed on PPK ID and PPK */
+
+	bool st_ppk_interm;		/* PPK stuff done in INTERMEDIATE? draft-smyslov-ipsecme-ikev2-qr-alt-06 */
+	chunk_t st_ppk_id_interm;	/* PPK_ID's intiator sent in INTERMEDIATE request */
 
 	chunk_t st_no_ppk_auth;
 	PK11SymKey *st_sk_d_no_ppk;

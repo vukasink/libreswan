@@ -46,6 +46,7 @@ static void calc_skeyseed_v2(PK11SymKey *shared,
 			     const ike_spis_t *ike_spis,
 			     const struct prf_desc *old_prf,
 			     PK11SymKey *old_skey_d,
+			     const chunk_t *ppk,
 			     /* outputs */
 			     PK11SymKey **SK_d_out,
 			     PK11SymKey **SK_ai_out,
@@ -68,6 +69,27 @@ static void calc_skeyseed_v2(PK11SymKey *shared,
 	    (integ != NULL ? integ->common.fqn : "n/a"),
 	    key_size, salt_size);
 
+	if (ppk != NULL) {
+		/* old_skey_d and *SK_d_out point to the same key so we need
+		 * to make a old_skey_d be an independent from *SK_d_out */
+		old_skey_d = key_from_symkey_bytes("'old' SK_d", *SK_d_out,
+					  0, prf->prf_key_size,
+					  HERE, logger);
+		/* release old keys (and salts) */
+		release_symkey(__func__, "SK_d", SK_d_out);
+		release_symkey(__func__, "SK_ai", SK_ai_out);
+		release_symkey(__func__, "SK_ar", SK_ar_out);
+		release_symkey(__func__, "SK_ei", SK_ei_out);
+		release_symkey(__func__, "SK_er", SK_er_out);
+		release_symkey(__func__, "SK_pi", SK_pi_out);
+		release_symkey(__func__, "SK_pr", SK_pr_out);
+		free_chunk_content(chunk_SK_pi_out);
+		free_chunk_content(chunk_SK_pr_out);
+
+		free_chunk_content(initiator_salt_out);
+		free_chunk_content(responder_salt_out);
+	}
+
 	passert(*SK_d_out == NULL);
 	passert(*SK_ai_out == NULL);
 	passert(*SK_ar_out == NULL);
@@ -77,17 +99,22 @@ static void calc_skeyseed_v2(PK11SymKey *shared,
 	passert(*SK_pr_out == NULL);
 
 	PK11SymKey *skeyseed;
-	if (old_skey_d == NULL) {
-		/* generate SKEYSEED from key=(Ni|Nr), hash of shared */
-		skeyseed = ikev2_ike_sa_skeyseed(prf, ni, nr, shared,
-						 logger);
-	}  else {
-		skeyseed = ikev2_ike_sa_rekey_skeyseed(old_prf,
-						       old_skey_d,
-						       shared, ni, nr,
-						       logger);
+	if (ppk == NULL) {
+		if (old_skey_d == NULL) {
+			/* generate SKEYSEED from key=(Ni|Nr), hash of shared */
+			skeyseed = ikev2_ike_sa_skeyseed(prf, ni, nr, shared,
+							logger);
+		} else {
+			skeyseed = ikev2_ike_sa_rekey_skeyseed(old_prf,
+							old_skey_d,
+							shared, ni, nr,
+							logger);
+		}
+	} else {
+		PK11SymKey *ppk_key = symkey_from_hunk("PPK Keying material", *ppk, logger);
+		skeyseed = ikev2_ike_sa_ppk_interm_skeyseed(prf, old_skey_d, ppk_key, logger);
+		release_symkey(__func__, "PPK chunk", &ppk_key);
 	}
-
 	passert(skeyseed != NULL);
 
 	/* now we have to generate the keys for everything */
@@ -200,7 +227,7 @@ void calc_v2_keymat(struct state *st,
 			  st->st_oakley.ta_encrypt->salt_size : 0),
 			 st->st_ni, st->st_nr,
 			 new_ike_spis,
-			 old_prf, old_skey_d,
+			 old_prf, old_skey_d, NULL,
 			 /* output */
 			 &st->st_skey_d_nss,
 			 &st->st_skey_ai_nss,
@@ -216,4 +243,39 @@ void calc_v2_keymat(struct state *st,
 			 st->st_logger);
 
 	st->hidden_variables.st_skeyid_calculated = true;
+}
+
+void recalc_v2_ppk_interm_keymat(struct state *st,
+		    PK11SymKey *old_skey_d, /* SKEYSEED IKE Rekey */
+		    const chunk_t *ppk,
+		    const struct prf_desc *old_prf, /* IKE Rekey */
+		    const ike_spis_t *new_ike_spis)
+{
+	passert(ppk != NULL);
+	passert(st->hidden_variables.st_skeyid_calculated == true);
+
+	calc_skeyseed_v2(st->st_dh_shared_secret,
+			 /* input */
+			 st->st_oakley.ta_encrypt,
+			 st->st_oakley.ta_prf,
+			 st->st_oakley.ta_integ,
+			 st->st_oakley.enckeylen / BITS_PER_BYTE,
+			 (st->st_oakley.ta_encrypt != NULL ?
+			  st->st_oakley.ta_encrypt->salt_size : 0),
+			 st->st_ni, st->st_nr,
+			 new_ike_spis,
+			 old_prf, old_skey_d, ppk,
+			 /* output */
+			 &st->st_skey_d_nss,
+			 &st->st_skey_ai_nss,
+			 &st->st_skey_ar_nss,
+			 &st->st_skey_ei_nss,
+			 &st->st_skey_er_nss,
+			 &st->st_skey_pi_nss,
+			 &st->st_skey_pr_nss,
+			 &st->st_skey_initiator_salt,
+			 &st->st_skey_responder_salt,
+			 &st->st_skey_chunk_SK_pi,
+			 &st->st_skey_chunk_SK_pr,
+			 st->st_logger);
 }

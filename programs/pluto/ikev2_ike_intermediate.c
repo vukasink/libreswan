@@ -31,6 +31,8 @@
 #include "nat_traversal.h"		/* for NAT_T_DETECTED */
 #include "ikev2_nat.h"
 #include "ikev2_ike_auth.h"
+#include "ikev2_ppk.h"
+#include "keys.h"
 #include "pluto_stats.h"
 #include "crypt_prf.h"
 
@@ -210,6 +212,41 @@ stf_status initiate_v2_IKE_INTERMEDIATE_request(struct ike_sa *ike, struct msg_d
 		return STF_INTERNAL_ERROR;
 	}
 
+	struct connection *const pc = ike->sa.st_connection;
+	if (LIN(POLICY_PPK_ALLOW, pc->policy) && ike->sa.st_seen_ppk) {
+		chunk_t *ppk_id;
+		chunk_t *ppk = get_connection_ppk(ike->sa.st_connection, &ppk_id);
+		// TODO: get_connection_ppk returns a list of PPK and its ID's
+
+		if (ppk != NULL) {
+			ike->sa.st_ppk_id_interm = clone_hunk(*ppk_id, "PPK_ID offered in IKE_INTERMEDIATE");
+			struct ppk_id_payload ppk_id_payl = { .type = 0, };
+			create_ppk_id_payload(ppk_id, &ppk_id_payl);
+			if (DBGP(DBG_BASE)) {
+				DBG_log("ppk type: %d", (int) ppk_id_payl.type);
+				DBG_dump_hunk("ppk_id from payload:", ppk_id_payl.ppk_id);
+			}
+
+			pb_stream ppks;
+			if (!emit_v2Npl(v2N_PPK_IDENTITY, request.pbs, &ppks) ||
+			    !emit_unified_ppk_id(&ppk_id_payl, &ppks)) {
+				free_chunk_content(&ppk_id_payl.ppk_id);
+				return STF_INTERNAL_ERROR;
+			}
+			free_chunk_content(&ppk_id_payl.ppk_id);
+			close_output_pbs(&ppks);
+		} else {
+			if (pc->policy & POLICY_PPK_INSIST) {
+				llog_sa(RC_LOG_SERIOUS, ike,
+					  "connection requires PPK, but we didn't find one");
+				return STF_FATAL;
+			} else {
+				llog_sa(RC_LOG, ike,
+					  "failed to find PPK and PPK_ID, continuing without PPK");
+			}
+		}
+	}
+
 	/* message is empty! */
 
 	if (!close_v2_message(&request)) {
@@ -291,7 +328,41 @@ stf_status process_v2_IKE_INTERMEDIATE_request(struct ike_sa *ike,
 		return STF_INTERNAL_ERROR;
 	}
 
-	/* empty message */
+	lset_t policy = ike->sa.st_connection->policy;
+	struct ppk_id_payload ppk_id_payl;
+	const chunk_t *ppk = NULL;
+	// TODO: process multiple PPK_IDENTITY's
+	if (md->pd[PD_v2N_PPK_IDENTITY] != NULL) {
+		dbg("received PPK_IDENTITY");
+		if (!extract_v2N_ppk_identity(&md->pd[PD_v2N_PPK_IDENTITY]->pbs, &ppk_id_payl, ike)) {
+			dbg("failed to extract PPK_ID from PPK_IDENTITY payload. Abort!");
+			return STF_FATAL;
+		}
+
+		ppk = get_ppk_by_id(&ppk_id_payl.ppk_id);
+
+		if (ppk != NULL && LIN(POLICY_PPK_ALLOW, policy)) {
+			llog_sa(RC_LOG, ike,
+				  "Found PPK that the initiator sent us!");
+
+			pb_stream ppks;
+			if (!emit_v2Npl(v2N_PPK_IDENTITY, response.pbs, &ppks) ||
+				!emit_unified_ppk_id(&ppk_id_payl, &ppks)) {
+				free_chunk_content(&ppk_id_payl.ppk_id);
+				return STF_INTERNAL_ERROR;
+			}
+			close_output_pbs(&ppks);
+		} else if (ppk == NULL && LIN(POLICY_PPK_INSIST, policy)) {
+			free_chunk_content(&ppk_id_payl.ppk_id);
+			return STF_FATAL;
+		} else {
+			llog_sa(RC_LOG, ike,
+				  "ignored received PPK_IDENTITY - connection does not require PPK or PPKID not found");
+		}
+		free_chunk_content(&ppk_id_payl.ppk_id);
+	}
+
+	/* if no PPK in INTERMEDIATE -> empty message */
 
 	if (!close_v2_message(&response)) {
 		return STF_INTERNAL_ERROR;
@@ -314,6 +385,16 @@ stf_status process_v2_IKE_INTERMEDIATE_request(struct ike_sa *ike,
 
 	record_v2_message(response.ike, &response.message,
 			  response.story, response.role);
+
+	/* recalculate keys */
+	if (ppk != NULL && LIN(POLICY_PPK_ALLOW, policy)) {
+		recalc_v2_ppk_interm_keymat(&ike->sa,
+			ike->sa.st_skey_d_nss,
+			ppk,
+			NULL, /* IKE Rekey */
+			&ike->sa.st_ike_spis);
+		ike->sa.st_ppk_interm = true;
+	}
 
 	return STF_OK;
 }
@@ -438,6 +519,40 @@ stf_status process_v2_IKE_INTERMEDIATE_response_continue(struct state *st, struc
 	/*
 	 * XXX: does the keymat need to be re-computed here?
 	 */
+
+	lset_t policy = ike->sa.st_connection->policy;
+	bool found_req_ppk_id = md->pd[PD_v2N_PPK_IDENTITY] != NULL;
+
+	if (ike->sa.st_ppk_id_interm.ptr != NULL && md->pd[PD_v2N_PPK_IDENTITY] != NULL) {
+		struct ppk_id_payload payl;
+
+		if (!extract_v2N_ppk_identity(&md->pd[PD_v2N_PPK_IDENTITY]->pbs, &payl, ike)) {
+			dbg("failed to extract PPK_ID from PPK_IDENTITY payload. Abort!");
+			return STF_FATAL;
+		}
+		// TODO: ike->sa.st_ppk_id_interm is a list, and the if branch checks for
+		// list membership (pay.ppk_id \in ike->sa.st_ppk_id_interm ?)
+		if (hunk_eq(payl.ppk_id, ike->sa.st_ppk_id_interm)) {
+			dbg("extracted PPK_ID is the same as we initially sent!");
+			const chunk_t *ppk = get_ppk_by_id(&payl.ppk_id);
+			passert(ppk != NULL);
+			recalc_v2_ppk_interm_keymat(&ike->sa,
+				ike->sa.st_skey_d_nss,
+				ppk,
+				NULL, /* IKE Rekey */
+				&ike->sa.st_ike_spis);
+			ike->sa.st_ppk_interm = true;
+		} else {
+			dbg("extracted PPK_ID not the same as we initially sent!");
+			if (LIN(POLICY_PPK_INSIST, policy)) {
+				found_req_ppk_id = false;
+			}
+		}
+	}
+	if (LIN(POLICY_PPK_INSIST, policy) && !found_req_ppk_id) {
+		llog_sa(RC_LOG_SERIOUS, ike, "Requested PPK_ID not found and connection requires a valid PPK");
+		return STF_FATAL;
+	}
 
 	/*
 	 * We've done one intermediate exchange round, now proceed to

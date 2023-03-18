@@ -117,7 +117,7 @@ stf_status initiate_v2_IKE_AUTH_request(struct ike_sa *ike, struct msg_digest *m
 	 * Stash the no-ppk keys in st_skey_*_no_ppk, and then
 	 * scramble the st_skey_* keys with PPK.
 	 */
-	if (LIN(POLICY_PPK_ALLOW, pc->policy) && ike->sa.st_seen_ppk) {
+	if (!ike->sa.st_ppk_interm && LIN(POLICY_PPK_ALLOW, pc->policy) && ike->sa.st_seen_ppk) {
 		chunk_t *ppk_id;
 		chunk_t *ppk = get_connection_ppk(ike->sa.st_connection, &ppk_id);
 
@@ -173,7 +173,7 @@ stf_status initiate_v2_IKE_AUTH_request(struct ike_sa *ike, struct msg_digest *m
 	ike->sa.st_v2_id_payload.mac = v2_hash_id_payload("IDi", ike,
 							  "st_skey_pi_nss",
 							  ike->sa.st_skey_pi_nss);
-	if (ike->sa.st_seen_ppk && !LIN(POLICY_PPK_INSIST, pc->policy)) {
+	if (!ike->sa.st_ppk_interm && ike->sa.st_seen_ppk && !LIN(POLICY_PPK_INSIST, pc->policy)) {
 		/* ID payload that we've build is the same */
 		ike->sa.st_v2_id_payload.mac_no_ppk_auth =
 			v2_hash_id_payload("IDi (no-PPK)", ike,
@@ -475,7 +475,7 @@ stf_status initiate_v2_IKE_AUTH_request_signature_continue(struct ike_sa *ike,
 	 * If we and responder are willing to use a PPK, we need to
 	 * generate NO_PPK_AUTH as well as PPK-based AUTH payload
 	 */
-	if (ike->sa.st_seen_ppk) {
+	if (!ike->sa.st_ppk_interm && ike->sa.st_seen_ppk) {
 		chunk_t *ppk_id;
 		get_connection_ppk(ike->sa.st_connection, &ppk_id);
 		struct ppk_id_payload ppk_id_p = { .type = 0, };
@@ -661,53 +661,73 @@ stf_status process_v2_IKE_AUTH_request_standard_payloads(struct ike_sa *ike, str
 	 * either related to the IKE SA, or the Child SA. Here we only
 	 * process the ones related to the IKE SA.
 	 */
-	if (md->pd[PD_v2N_PPK_IDENTITY] != NULL) {
-		dbg("received PPK_IDENTITY");
-		struct ppk_id_payload payl;
-		if (!extract_v2N_ppk_identity(&md->pd[PD_v2N_PPK_IDENTITY]->pbs, &payl, ike)) {
-			dbg("failed to extract PPK_ID from PPK_IDENTITY payload. Abort!");
-			return STF_FATAL;
-		}
 
-		const chunk_t *ppk = get_ppk_by_id(&payl.ppk_id);
-		free_chunk_content(&payl.ppk_id);
-		if (ppk != NULL) {
-			found_ppk = true;
-		}
-
-		if (found_ppk && LIN(POLICY_PPK_ALLOW, policy)) {
-			ppk_recalculate(ppk, ike->sa.st_oakley.ta_prf,
-					&ike->sa.st_skey_d_nss,
-					&ike->sa.st_skey_pi_nss,
-					&ike->sa.st_skey_pr_nss,
-					ike->sa.st_logger);
-			ike->sa.st_ppk_used = true;
-			llog_sa(RC_LOG, ike,
-				  "PPK AUTH calculated as responder");
-		} else {
-			llog_sa(RC_LOG, ike,
-				  "ignored received PPK_IDENTITY - connection does not require PPK or PPKID not found");
-		}
-	}
-	if (md->pd[PD_v2N_NO_PPK_AUTH] != NULL) {
-		pb_stream pbs = md->pd[PD_v2N_NO_PPK_AUTH]->pbs;
-		size_t len = pbs_left(&pbs);
-		dbg("received NO_PPK_AUTH");
-		if (LIN(POLICY_PPK_INSIST, policy)) {
-			dbg("Ignored NO_PPK_AUTH data - connection insists on PPK");
-		} else {
-
-			chunk_t no_ppk_auth = alloc_chunk(len, "NO_PPK_AUTH");
-			diag_t d = pbs_in_raw(&pbs, no_ppk_auth.ptr, len, "NO_PPK_AUTH extract");
-			if (d != NULL) {
-				llog_diag(RC_LOG_SERIOUS, ike->sa.st_logger, &d,
-					 "failed to extract %zd bytes of NO_PPK_AUTH from Notify payload", len);
-				free_chunk_content(&no_ppk_auth);
+	/* Deal with RFC8784 PPK stuff only if we already didn't do PPK in INTERMEDIATE */
+	if (!ike->sa.st_ppk_interm) {
+		if (md->pd[PD_v2N_PPK_IDENTITY] != NULL) {
+			dbg("received PPK_IDENTITY");
+			struct ppk_id_payload payl;
+			if (!extract_v2N_ppk_identity(&md->pd[PD_v2N_PPK_IDENTITY]->pbs, &payl, ike)) {
+				dbg("failed to extract PPK_ID from PPK_IDENTITY payload. Abort!");
 				return STF_FATAL;
 			}
-			replace_chunk(&ike->sa.st_no_ppk_auth, no_ppk_auth);
+
+			const chunk_t *ppk = get_ppk_by_id(&payl.ppk_id);
+			free_chunk_content(&payl.ppk_id);
+			if (ppk != NULL) {
+				found_ppk = true;
+			}
+
+			if (found_ppk && LIN(POLICY_PPK_ALLOW, policy)) {
+				ppk_recalculate(ppk, ike->sa.st_oakley.ta_prf,
+						&ike->sa.st_skey_d_nss,
+						&ike->sa.st_skey_pi_nss,
+						&ike->sa.st_skey_pr_nss,
+						ike->sa.st_logger);
+				ike->sa.st_ppk_used = true;
+				llog_sa(RC_LOG, ike,
+					"PPK AUTH calculated as responder");
+			} else {
+				llog_sa(RC_LOG, ike,
+					"ignored received PPK_IDENTITY - connection does not require PPK or PPKID not found");
+			}
+		}
+		if (md->pd[PD_v2N_NO_PPK_AUTH] != NULL) {
+			pb_stream pbs = md->pd[PD_v2N_NO_PPK_AUTH]->pbs;
+			size_t len = pbs_left(&pbs);
+			dbg("received NO_PPK_AUTH");
+			if (LIN(POLICY_PPK_INSIST, policy)) {
+				dbg("Ignored NO_PPK_AUTH data - connection insists on PPK");
+			} else {
+
+				chunk_t no_ppk_auth = alloc_chunk(len, "NO_PPK_AUTH");
+				diag_t d = pbs_in_raw(&pbs, no_ppk_auth.ptr, len, "NO_PPK_AUTH extract");
+				if (d != NULL) {
+					llog_diag(RC_LOG_SERIOUS, ike->sa.st_logger, &d,
+						"failed to extract %zd bytes of NO_PPK_AUTH from Notify payload", len);
+					free_chunk_content(&no_ppk_auth);
+					return STF_FATAL;
+				}
+				replace_chunk(&ike->sa.st_no_ppk_auth, no_ppk_auth);
+			}
+		}
+
+		/*
+		* If we found proper PPK ID and policy allows PPK, use that.
+		* Otherwise use NO_PPK_AUTH
+		*/
+		if (found_ppk && LIN(POLICY_PPK_ALLOW, policy))
+			free_chunk_content(&ike->sa.st_no_ppk_auth);
+
+		if (!found_ppk && LIN(POLICY_PPK_INSIST, policy)) {
+			llog_sa(RC_LOG_SERIOUS, ike, "Requested PPK_ID not found and connection requires a valid PPK");
+			record_v2N_response(ike->sa.st_logger, ike, md,
+					v2N_AUTHENTICATION_FAILED, NULL/*no data*/,
+					ENCRYPTED_PAYLOAD);
+			return STF_FATAL;
 		}
 	}
+
 	ike->sa.st_ike_seen_v2n_mobike_supported = md->pd[PD_v2N_MOBIKE_SUPPORTED] != NULL;
 	if (ike->sa.st_ike_seen_v2n_mobike_supported) {
 		dbg("received v2N_MOBIKE_SUPPORTED %s",
@@ -715,21 +735,6 @@ stf_status process_v2_IKE_AUTH_request_standard_payloads(struct ike_sa *ike, str
 		    "and sent" : "while it did not sent");
 	}
 	ike->sa.st_ike_seen_v2n_initial_contact = md->pd[PD_v2N_INITIAL_CONTACT] != NULL;
-
-	/*
-	 * If we found proper PPK ID and policy allows PPK, use that.
-	 * Otherwise use NO_PPK_AUTH
-	 */
-	if (found_ppk && LIN(POLICY_PPK_ALLOW, policy))
-		free_chunk_content(&ike->sa.st_no_ppk_auth);
-
-	if (!found_ppk && LIN(POLICY_PPK_INSIST, policy)) {
-		llog_sa(RC_LOG_SERIOUS, ike, "Requested PPK_ID not found and connection requires a valid PPK");
-		record_v2N_response(ike->sa.st_logger, ike, md,
-				    v2N_AUTHENTICATION_FAILED, NULL/*no data*/,
-				    ENCRYPTED_PAYLOAD);
-		return STF_FATAL;
-	}
 
 	return STF_OK;
 }
@@ -806,7 +811,7 @@ stf_status process_v2_IKE_AUTH_request_id_tail(struct ike_sa *ike, struct msg_di
 	bool remote_can_authby_null = remote_authby.null;
 	bool remote_can_authby_digsig = authby_has_digsig(remote_authby);
 
-	if (!ike->sa.st_ppk_used && ike->sa.st_no_ppk_auth.ptr != NULL) {
+	if (!ike->sa.st_ppk_interm && !ike->sa.st_ppk_used && ike->sa.st_no_ppk_auth.ptr != NULL) {
 		/*
 		 * we didn't recalculate keys with PPK, but we found NO_PPK_AUTH
 		 * (meaning that initiator did use PPK) so we try to verify NO_PPK_AUTH.
@@ -1204,7 +1209,7 @@ static stf_status process_v2_IKE_AUTH_request_auth_signature_continue(struct ike
 			return STF_INTERNAL_ERROR;
 	}
 
-	if (ike->sa.st_ppk_used) {
+	if (!ike->sa.st_ppk_interm && ike->sa.st_ppk_used) {
 		if (!emit_v2N(v2N_PPK_IDENTITY, response.pbs))
 			return STF_INTERNAL_ERROR;
 	}
@@ -1333,42 +1338,45 @@ static stf_status process_v2_IKE_AUTH_response_post_cert_decode(struct state *ik
 
 	passert(that_authby != AUTH_NEVER && that_authby != AUTH_UNSET);
 
-	if (md->pd[PD_v2N_PPK_IDENTITY] != NULL) {
-		if (!LIN(POLICY_PPK_ALLOW, c->policy)) {
-			llog_sa(RC_LOG_SERIOUS, ike, "received PPK_IDENTITY but connection does not allow PPK");
-			return STF_FATAL;
+	/* Deal with RFC8784 PPK stuff only if we already didn't do PPK in INTERMEDIATE */
+	if (!ike->sa.st_ppk_interm) {
+		if (md->pd[PD_v2N_PPK_IDENTITY] != NULL) {
+			if (!LIN(POLICY_PPK_ALLOW, c->policy)) {
+				llog_sa(RC_LOG_SERIOUS, ike, "received PPK_IDENTITY but connection does not allow PPK");
+				return STF_FATAL;
+			}
+		} else {
+			if (LIN(POLICY_PPK_INSIST, c->policy)) {
+				llog_sa(RC_LOG_SERIOUS, ike,
+					"failed to receive PPK confirmation and connection has ppk=insist");
+				dbg("should be initiating a notify that kills the state");
+				pstat_sa_failed(&ike->sa, REASON_AUTH_FAILED);
+				return STF_FATAL;
+			}
 		}
-	} else {
-		if (LIN(POLICY_PPK_INSIST, c->policy)) {
-			llog_sa(RC_LOG_SERIOUS, ike,
-				"failed to receive PPK confirmation and connection has ppk=insist");
-			dbg("should be initiating a notify that kills the state");
-			pstat_sa_failed(&ike->sa, REASON_AUTH_FAILED);
-			return STF_FATAL;
+
+		/*
+		* If we sent USE_PPK and we did not receive a PPK_IDENTITY,
+		* it means the responder failed to find our PPK ID, but allowed
+		* the connection to continue without PPK by using our NO_PPK_AUTH
+		* payload. We should revert our key material to NO_PPK versions.
+		*/
+		if (ike->sa.st_seen_ppk &&
+		md->pd[PD_v2N_PPK_IDENTITY] == NULL &&
+		LIN(POLICY_PPK_ALLOW, c->policy)) {
+			/* discard the PPK based calculations */
+
+			llog_sa(RC_LOG, ike, "peer wants to continue without PPK - switching to NO_PPK");
+
+			release_symkey(__func__, "st_skey_d_nss",  &ike->sa.st_skey_d_nss);
+			ike->sa.st_skey_d_nss = reference_symkey(__func__, "used sk_d from no ppk", ike->sa.st_sk_d_no_ppk);
+
+			release_symkey(__func__, "st_skey_pi_nss", &ike->sa.st_skey_pi_nss);
+			ike->sa.st_skey_pi_nss = reference_symkey(__func__, "used sk_pi from no ppk", ike->sa.st_sk_pi_no_ppk);
+
+			release_symkey(__func__, "st_skey_pr_nss", &ike->sa.st_skey_pr_nss);
+			ike->sa.st_skey_pr_nss = reference_symkey(__func__, "used sk_pr from no ppk", ike->sa.st_sk_pr_no_ppk);
 		}
-	}
-
-	/*
-	 * If we sent USE_PPK and we did not receive a PPK_IDENTITY,
-	 * it means the responder failed to find our PPK ID, but allowed
-	 * the connection to continue without PPK by using our NO_PPK_AUTH
-	 * payload. We should revert our key material to NO_PPK versions.
-	 */
-	if (ike->sa.st_seen_ppk &&
-	    md->pd[PD_v2N_PPK_IDENTITY] == NULL &&
-	    LIN(POLICY_PPK_ALLOW, c->policy)) {
-		/* discard the PPK based calculations */
-
-		llog_sa(RC_LOG, ike, "peer wants to continue without PPK - switching to NO_PPK");
-
-		release_symkey(__func__, "st_skey_d_nss",  &ike->sa.st_skey_d_nss);
-		ike->sa.st_skey_d_nss = reference_symkey(__func__, "used sk_d from no ppk", ike->sa.st_sk_d_no_ppk);
-
-		release_symkey(__func__, "st_skey_pi_nss", &ike->sa.st_skey_pi_nss);
-		ike->sa.st_skey_pi_nss = reference_symkey(__func__, "used sk_pi from no ppk", ike->sa.st_sk_pi_no_ppk);
-
-		release_symkey(__func__, "st_skey_pr_nss", &ike->sa.st_skey_pr_nss);
-		ike->sa.st_skey_pr_nss = reference_symkey(__func__, "used sk_pr from no ppk", ike->sa.st_sk_pr_no_ppk);
 	}
 
 	struct crypt_mac idhash_in = v2_id_hash(ike, "idhash auth R2", "IDr",

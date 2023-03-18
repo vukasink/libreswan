@@ -29,6 +29,8 @@
 
 #include "ike_alg.h"
 #include "crypt_symkey.h"
+#include "ikev2_prf.h"
+#include "crypt_dh.h"
 #include "ikev2.h"
 #include "ikev2_ppk.h"
 #include "ike_alg_hash.h"

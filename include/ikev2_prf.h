@@ -47,6 +47,11 @@ PK11SymKey *ikev2_ike_sa_rekey_skeyseed(const struct prf_desc *prf_desc,
 					const chunk_t Ni, const chunk_t Nr,
 					struct logger *logger);
 
+PK11SymKey *ikev2_ike_sa_ppk_interm_skeyseed(const struct prf_desc *prf_desc,
+					PK11SymKey *old_SK_d,
+					PK11SymKey *ppk_key,
+					struct logger *logger);
+
 PK11SymKey *ikev2_ike_sa_keymat(const struct prf_desc *prf_desc,
 				PK11SymKey *skeyseed,
 				const chunk_t Ni, const chunk_t Nr,
